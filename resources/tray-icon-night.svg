@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 墨桥托盘·夜间（深色任务栏）：透明底 + 霓青线条（暗色形态语言） -->
+  <path d="M4 19.3 Q10 8.7 16 14 Q22 8.7 28 19.3" fill="none" stroke="#43D9C4" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M6.7 23.7 H25.3" stroke="#43D9C4" stroke-width="2" stroke-linecap="round" opacity=".55"/>
+  <circle cx="10" cy="27.5" r="1.7" fill="#43D9C4" opacity=".85"/>
+  <circle cx="16" cy="27.5" r="1.7" fill="#43D9C4" opacity=".4"/>
+  <circle cx="22" cy="27.5" r="1.7" fill="#43D9C4" opacity=".85"/>
+</svg>

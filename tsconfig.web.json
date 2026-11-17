@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "jsxImportSource": "vue",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "paths": { "@/*": ["./src/renderer/src/*"], "@shared/*": ["./src/shared/*"] }
+  },
+  "include": ["src/renderer/src/**/*", "src/renderer/src/**/*.vue"]
+}

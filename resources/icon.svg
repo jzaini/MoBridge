@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 墨桥 MoBridge 应用图标（默认形态）：墨青底 + 瓷白双拱桥 + 数据流 -->
+  <!-- 「墨」家族母题：双拱桥=通路。暗色形态=石墨+霓青、亮色形态=宣纸+浓墨，见 brand/品牌视觉规范.md -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C5470"/>
+      <stop offset="1" stop-color="#1F4054"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="30" height="30" rx="7.2" fill="url(#bg)"/>
+  <path d="M4 19.3 Q10 8.7 16 14 Q22 8.7 28 19.3" fill="none" stroke="#EFF5F8" stroke-width="2.33" stroke-linecap="round"/>
+  <path d="M6.7 23.7 H25.3" stroke="#EFF5F8" stroke-width="1.67" stroke-linecap="round" opacity=".88"/>
+  <circle cx="10" cy="27.7" r="1.5" fill="#EFF5F8" opacity=".8"/>
+  <circle cx="16" cy="27.7" r="1.5" fill="#EFF5F8" opacity=".45"/>
+  <circle cx="22" cy="27.7" r="1.5" fill="#EFF5F8" opacity=".8"/>
+</svg>

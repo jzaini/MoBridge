@@ -1,0 +1,70 @@
+{
+  "name": "mo-bridge",
+  "productName": "墨桥",
+  "version": "0.1.0",
+  "description": "墨桥 MoBridge —— 把第三方免费模型接入你的客户端软件（墨坊家族 · 墨坊造器，墨桥通路）",
+  "author": "jz",
+  "license": "MIT",
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "npm run build:service && electron-vite dev",
+    "build": "npm run build:service && electron-vite build",
+    "build:service": "node scripts/build-service.mjs",
+    "build:win": "npm run build:pack",
+    "build:pack": "npm run build && node scripts/build-win.mjs",
+    "build:win:portable": "npm run build && electron-builder --win portable --x64 --publish never",
+    "test": "node --experimental-strip-types --test \"test/*.test.js\"",
+    "icons": "node scripts/rasterize-icons.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json --composite false && tsc --noEmit -p tsconfig.node.json --composite false"
+  },
+  "dependencies": {
+    "tar": "^7.5.22",
+    "undici": "^7.30.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "@types/node": "^22.10.0",
+    "naive-ui": "^2.40.3",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.1.10"
+  },
+  "build": {
+    "appId": "com.mofang.mobridge",
+    "productName": "墨桥",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}

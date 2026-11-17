@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 墨桥 macOS 托盘模板图标：纯黑 + 透明（必须单色），系统自动适配亮/暗菜单栏 -->
+  <path d="M4 19.3 Q10 8.7 16 14 Q22 8.7 28 19.3" fill="none" stroke="#000000" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M6.7 23.7 H25.3" stroke="#000000" stroke-width="2" stroke-linecap="round" opacity=".9"/>
+  <circle cx="10" cy="27.5" r="1.7" fill="#000000" opacity=".8"/>
+  <circle cx="16" cy="27.5" r="1.7" fill="#000000" opacity=".45"/>
+  <circle cx="22" cy="27.5" r="1.7" fill="#000000" opacity=".8"/>
+</svg>

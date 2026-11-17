@@ -1,0 +1,12 @@
+node_modules/
+out/
+dist/
+release*/
+package-lock.json
+*.log
+# 临时验证目录：CDP 截图与调试脚本，只是自己看，不进仓库
+.tmp-verify/
+.idea/
+.vscode/
+.workbuddy/
+.DS_Store
