@@ -1,0 +1,110 @@
+/* 墨桥全局样式：亮/暗两套 CSS 变量，
+   Naive UI 负责组件，这里只管页面底色、文字与少量自定义元素。 */
+:root {
+  --background: #f5f5f7;
+  --surface: #ffffff;
+  --text: #242426;
+  --muted: #61616a;
+  --line: #d8d8dd;
+  --subtle-line: #e8e8ed;
+  --accent: #3d6b8e;
+  --accent-text: #2f5471;
+  --selected: #e8f1fe;
+  --hover: #f0f4fa;
+  --table-heading: #eceef3;
+  --detail-background: #f6f8fb;
+  --success-dot: #34c759;
+  --success-text: #246b39;
+  --warning-dot: #ff9500;
+  --warning-background: #fff5e5;
+  --warning-text: #865000;
+  --error-dot: #d03050;
+  --error-text: #b42318;
+  --error-background: #fff1ef;
+  --disabled-text: #9a9aa2;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", monospace;
+
+  /* 液态玻璃：半透明面板 + 细高光边 + 柔和投影。
+     底色必须跟主题走，否则浅色下会出现"深色玻璃块"这种不通透的脏色。
+     玻璃要"透"出东西才像玻璃：背后必须有可见的颜色起伏（见 App 的 .app-ambient），
+     否则 backdrop-filter 作用在纯平底色上等于什么都没做，看上去就是一张白卡。 */
+  --glass-bg: linear-gradient(158deg, rgba(255, 255, 255, .46), rgba(236, 243, 252, .22));
+  --glass-line: rgba(255, 255, 255, .92);
+  --glass-edge: rgba(26, 42, 66, .12);
+  --glass-inset: rgba(255, 255, 255, .80);
+  --glass-sheen: radial-gradient(130% 90% at 0% 0%, rgba(255, 255, 255, .78), rgba(255, 255, 255, 0) 58%);
+  --glass-shadow: 0 16px 36px rgba(24, 42, 70, .14);
+  /* 背景氛围色：三团错开的光，铺满整块工作区，玻璃滑过时能看出折射。 */
+  --ambient-1: rgba(61, 107, 142, .46);
+  --ambient-2: rgba(118, 158, 196, .44);
+  --ambient-3: rgba(96, 132, 180, .34);
+}
+:root.dark {
+  --background: #1c1c1e;
+  --surface: #242426;
+  --text: #f2f2f7;
+  --muted: #b0b0bb;
+  --line: #444449;
+  --subtle-line: #38383d;
+  --accent: #0a84ff;
+  --accent-text: #64adff;
+  --selected: #223b58;
+  --hover: #2b3038;
+  --table-heading: #2c2c30;
+  --detail-background: #242c37;
+  --success-dot: #30d158;
+  --success-text: #72df8d;
+  --warning-dot: #ff9f0a;
+  --warning-background: #332b20;
+  --warning-text: #ffc06a;
+  --error-dot: #ff453a;
+  --error-text: #ff8c83;
+  --error-background: #352624;
+  --disabled-text: #9797a1;
+
+  --glass-bg: linear-gradient(158deg, rgba(62, 62, 68, .58), rgba(36, 36, 40, .46));
+  --glass-line: rgba(255, 255, 255, .16);
+  --glass-edge: rgba(0, 0, 0, .40);
+  --glass-inset: rgba(255, 255, 255, .09);
+  --glass-sheen: radial-gradient(120% 80% at 0% 0%, rgba(255, 255, 255, .16), transparent 60%);
+  --glass-shadow: 0 16px 38px rgba(0, 0, 0, .48);
+  --ambient-1: rgba(64, 140, 255, .26);
+  --ambient-2: rgba(84, 190, 182, .20);
+  --ambient-3: rgba(120, 108, 220, .18);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: var(--background);
+  color: var(--text);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+}
+.mono { font-family: var(--mono, ui-monospace, Consolas, monospace); }
+
+/* 液态玻璃面板：右侧写入目标卡用它，让「执行区」跟内容区在质感上分层。
+   做成一个类而不是散在各页里，是为了三个接入页用同一套系数，换主题时只改变量。 */
+.glass {
+  position: relative;
+  background-image: var(--glass-sheen), var(--glass-bg);
+  border: 1px solid var(--glass-line);
+  border-radius: 16px;
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-inset), 0 0 0 1px var(--glass-edge);
+  backdrop-filter: blur(26px) saturate(185%);
+  -webkit-backdrop-filter: blur(26px) saturate(185%);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  /* 不支持模糊时退回不透明底，保证文字对比度不会掉。 */
+  .glass { background-image: none; background-color: var(--surface); }
+}
+
+/* 状态圆点（表格/面板/弹窗共用） */
+.mo-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warning-dot); flex: 0 0 7px;
+}
+.mo-dot.ok { background: var(--success-dot); }
+.mo-dot.error { background: var(--error-dot); }
+.mo-dot.na { background: var(--disabled-text); }
+.mo-dot.busy { background: var(--accent); }

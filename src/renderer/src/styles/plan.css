@@ -1,0 +1,169 @@
+/* 三个接入页共用的「分步向导」骨架。
+   布局口径：左列 = 步骤栏（占满整列高度），中列 = 当前步骤的内容，
+   右列 = 写入目标卡片（液态玻璃，见 global.css 的 .glass）。
+   各页只在 SFC 里补自己的少量差异样式，不再各写一套页面骨架。 */
+
+.plan {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr) 292px;
+  gap: 16px;
+  padding: 14px 20px 18px;
+  /* 高度必须给死：三列都靠 stretch 对齐，中间那列的表格要吃掉剩余高度、
+     在自己内部滚动。用 min-height:100% 的话行高会跟着表格内容长，整页就滚起来了。 */
+  height: 100%;
+  min-height: 0;
+  align-items: stretch;
+}
+.plan-rail { min-width: 0; }
+.plan-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+/* 右列现在是三张卡（配置信息 / 目标信息 / 写入配置）叠着放：窗口不高时在自己列里滚，
+   而不是把整个页面撑长、把中间的表格挤没。 */
+.plan-aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-y: auto; padding-right: 2px; }
+/* 卡片之间不要再叠投影：每张卡自带 16px 的阴影，两张一靠近，中间那 12px 缝就被
+   上下两层阴影染成一条灰带，看着像"两张卡粘在一起"。这里把右列卡片收敛成
+   1px 描边 + 内高光，缝隙回到页面底色，仍然是玻璃面。 */
+.plan-aside > .glass {
+  box-shadow: inset 0 1px 0 var(--glass-inset), 0 0 0 1px var(--glass-edge);
+}
+
+/* 步骤栏收起：只留 44px 宽的序号列，横向空间全部让给模型表。 */
+.plan.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr) 292px; }
+
+/* 表格型步骤：卡片吃掉剩余高度，表格在自己内部滚动。
+   这样窗口拉高时是多看到几行模型，而不是在页面底部留一大片空白。 */
+.pane.table-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+/* 卡片里的标题/工具条/图例一律不许被压缩：空间不够时该缩的是表格，
+   而不是把说明文字挤成半行。 */
+.pane > * { flex: 0 0 auto; }
+.pane.table-pane .table-scroll { flex: 1 1 auto; min-height: 200px; }
+
+/* 窄窗口（最小 1000px）：右列掉到内容下方，模型表还有 700+ 可用宽度。 */
+@media (max-width: 1180px) {
+  /* 变成两行布局后不能再锁死高度：否则中间内容会被下面的卡片压住。 */
+  .plan { grid-template-columns: 196px minmax(0, 1fr); height: auto; min-height: 100%; }
+  .plan.rail-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
+  .plan-aside { grid-column: 1 / -1; overflow: visible; flex-direction: row; align-items: flex-start; }
+  /* 横排时每张卡别拉满整行：一行里 label 在最左、值在最右会显得很散。 */
+  .plan-aside > .target-card, .plan-aside > .write-card { flex: 1 1 0; max-width: 460px; }
+  .pane.table-pane { min-height: 340px; }
+}
+
+/* ── 步骤头 ─────────────────────────────────────────────────────────── */
+.stage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex: 0 0 auto; }
+.stage-title { min-width: 0; }
+.stage-title h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.3px; line-height: 1.3; }
+.stage-sub { margin: 3px 0 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.stage-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: 0 0 auto; }
+
+/* ── 内容卡 ─────────────────────────────────────────────────────────── */
+/* 内容卡一律吃掉剩余高度：短步骤（连接 / 安装 / 填 Key）如果只有百来像素高，
+   下面留一大片空，看起来像没加载完；让它与右列卡片拉齐底部，页面才是一个整体。 */
+.pane { background: var(--surface); border: 1px solid var(--subtle-line); border-radius: 12px; padding: 14px 16px; min-width: 0; flex: 1 1 auto; }
+/* 统计条：三个数字挤成一条，跟着标题右侧走。
+   原先是标题下面单起一行的大号指标，把中间区域往下压了整整一行——用户的原话是
+   "占了太多高度"。数字还是要看得见，但不该比模型表更抢眼。 */
+.stat-strip {
+  flex: 0 0 auto; display: flex; align-items: stretch; overflow: hidden;
+  border: 1px solid var(--subtle-line); border-radius: 9px; background: var(--detail-background, var(--surface));
+}
+.stat { display: flex; align-items: baseline; gap: 5px; padding: 4px 10px; }
+.stat + .stat { border-left: 1px solid var(--subtle-line); }
+.stat-v { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.stat-v.ok { color: var(--success-text); }
+.stat-v.warn { color: var(--warning-text); }
+.stat-v.na { color: var(--disabled-text); }
+.stat-k { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.pane-head.with-stats { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.pane-head.with-stats > div { min-width: 0; }
+
+/* 全不可用时把"为什么"摊开：11 个同样的上游报错折叠成一行，用户才知道
+   不是自己配错了。检测结论按原因分组，来自真实的 modelResults。 */
+.diag {
+  margin: 10px 0 0; padding: 9px 11px; border-radius: 9px;
+  background: var(--warning-background); border: 1px solid color-mix(in srgb, var(--warning-dot) 30%, transparent);
+  font-size: 11.5px; line-height: 1.6; color: var(--text);
+}
+.diag b { font-size: 12px; }
+.diag-list { margin: 6px 0 0; padding-left: 16px; display: grid; gap: 2px; color: var(--warning-text); }
+.diag-list code { font-family: var(--mono); font-size: 10.5px; }
+.diag-foot { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+.pane-head h3 { margin: 0; font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.pane-head p { margin: 6px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.pane-body { margin-top: 12px; }
+
+/* 步骤内的小标题（一张卡里分几段时用） */
+.sec-title { margin: 14px 0 0; font-size: 11px; font-weight: 650; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
+
+/* 工具条：全选 / 只选可用 / 计数 */
+.pane-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 8px; }
+.toolbar-hint { font-size: 11px; color: var(--disabled-text); }
+.toolbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); }
+
+/* ── 数据表（AtomCode / 日日新 共用，OpenCode 用 ModelTable 组件） ───────── */
+.table-scroll { overflow: auto; border: 1px solid var(--subtle-line); border-radius: 9px; background: var(--surface); }
+.mo-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mo-table th {
+  position: sticky; top: 0; z-index: 1; text-align: left; padding: 8px 10px;
+  background: var(--table-heading); border-bottom: 1px solid var(--subtle-line);
+  font-weight: 650; color: var(--muted); white-space: nowrap;
+}
+.mo-table td { padding: 8px 10px; border-bottom: 1px solid var(--subtle-line); vertical-align: middle; }
+.mo-table tbody tr:last-child td { border-bottom: 0; }
+.mo-table tbody tr:hover { background: var(--hover); }
+.mo-table tbody tr.chosen { background: var(--selected); }
+.col-check { width: 34px; text-align: center; }
+.col-num { text-align: right; white-space: nowrap; }
+.col-act { width: 56px; text-align: right; }
+/* 「图像」这类二元能力放成一列，比塞进「能力」标签里更好扫：
+   用户是拿它决定"这个模型能不能接我的图"，需要一眼看到是/否，而不是读一排气泡。 */
+.col-img { width: 52px; text-align: center; white-space: nowrap; }
+.sn-yes { color: var(--success-text); font-weight: 600; }
+.sn-no { color: var(--disabled-text); }
+.cell-name { font-weight: 550; }
+.cell-sub { font-size: 11px; color: var(--muted); }
+.empty-cell { text-align: center; color: var(--muted); padding: 22px 10px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ── 说明文字 / 行内提示 ────────────────────────────────────────────── */
+.legend { margin: 10px 0 0; font-size: 11px; line-height: 1.6; color: var(--disabled-text); }
+.inline-error { margin: 10px 0 0; font-size: 12px; color: var(--error-text); background: var(--error-background); border-radius: 7px; padding: 7px 10px; }
+.inline-warn { margin: 10px 0 0; font-size: 12px; color: var(--warning-text); background: var(--warning-background); border-radius: 7px; padding: 7px 10px; }
+/* 鉴权通过这类"好事"也要有落点：只在表格里标绿，用户会怀疑自己看错。 */
+.inline-ok {
+  margin: 10px 0 0; font-size: 12px; color: var(--success-text);
+  background: color-mix(in srgb, var(--success-dot) 12%, transparent);
+  border-radius: 7px; padding: 7px 10px;
+}
+.page-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--disabled-text); margin-top: auto; padding-top: 2px; }
+
+/* ── 键值清单 ──────────────────────────────────────────────────────── */
+.kv { margin: 0; display: grid; gap: 6px; max-width: 560px; }
+.kv > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
+.kv dt { color: var(--muted); flex: 0 0 auto; }
+.kv dd { margin: 0; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv dd.ok { color: var(--success-text); }
+.kv dd.na { color: var(--disabled-text); }
+
+/* ── 行内控件 ──────────────────────────────────────────────────────── */
+.field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.field-row > .n-input { flex: 1 1 300px; min-width: 0; }
+.field-hint { font-size: 11px; color: var(--disabled-text); }
+.link-btn { border: 0; background: none; padding: 0; color: var(--accent-text); font-size: 12px; cursor: pointer; }
+.link-btn:hover { text-decoration: underline; }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border-radius: 999px; padding: 2px 10px; background: var(--hover); color: var(--muted); }
+.chip.ok { color: var(--success-text); }
+.chip.na { color: var(--disabled-text); }
+.tag { display: inline-block; margin-right: 4px; padding: 1px 6px; border-radius: 999px; font-size: 11px; background: var(--hover); color: var(--muted); }
+.dash { color: var(--disabled-text); }
+.mono { font-family: var(--mono); }
+
+/* ── 确认弹窗内容 ──────────────────────────────────────────────────── */
+.confirm-sec h4 { margin: 0 0 8px; font-size: 12px; color: var(--text); }
+.confirm-grid { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 11.5px; }
+.confirm-grid dt { color: var(--muted); }
+.confirm-grid dd { margin: 0; word-break: break-all; }
+.confirm-note { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+
+/* ── 说明清单 ─────────────────────────────────────────────────────── */
+.review-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.guide { line-height: 1.65; }
