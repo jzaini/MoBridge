@@ -1,16 +1,3 @@
-<script setup lang="ts">
-// 通用确认弹窗：写入/移除等破坏性操作执行前必须经过这里。
-import { NModal, NButton } from 'naive-ui'
-
-defineProps<{
-  show: boolean
-  title: string
-  okText?: string
-  danger?: boolean
-}>()
-const emit = defineEmits<{ (e: 'close'): void, (e: 'ok'): void }>()
-</script>
-
 <template>
   <NModal :show="show" @update:show="(v: boolean) => !v && emit('close')">
     <div class="mo-modal" role="dialog" aria-modal="true" :aria-label="title">
@@ -26,6 +13,19 @@ const emit = defineEmits<{ (e: 'close'): void, (e: 'ok'): void }>()
     </div>
   </NModal>
 </template>
+
+<script setup lang="ts">
+// 通用确认弹窗：写入/移除等破坏性操作执行前必须经过这里。
+import { NModal, NButton } from 'naive-ui'
+
+defineProps<{
+  show: boolean
+  title: string
+  okText?: string
+  danger?: boolean
+}>()
+const emit = defineEmits<{ (e: 'close'): void, (e: 'ok'): void }>()
+</script>
 
 <style scoped>
 .mo-modal {

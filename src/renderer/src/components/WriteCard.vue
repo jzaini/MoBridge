@@ -1,3 +1,34 @@
+<template>
+  <section class="glass write-card" aria-label="写入配置">
+    <header class="wc-head">
+      <span class="wc-title">写入配置</span>
+      <span class="wc-count">{{ count }} 个模型</span>
+    </header>
+
+    <p class="wc-lead">写进 <b>{{ targetName }}</b>：只替换墨桥写入的条目，其它工具与你手写的配置原样保留。</p>
+
+    <NButton class="wc-btn" type="primary" size="small" block :disabled="writeDisabled" @click="emit('write')">
+      {{ writeLabel }}
+    </NButton>
+    <p v-if="writeHint" class="wc-reason warn">{{ writeHint }}</p>
+
+    <!-- 移除是危险操作，但不用粉红实心：和主按钮并排时两种填色会互相打架。
+         ghost 描边保留红色语义，同时跟整排「描边次按钮」是同一种气质。 -->
+    <NButton class="wc-btn" size="small" block ghost type="error" :disabled="removeDisabled" @click="emit('remove')">
+      移除配置
+    </NButton>
+    <p v-if="removeHint" class="wc-reason">{{ removeHint }}</p>
+
+    <details v-if="previewList.length" class="wc-preview">
+      <summary>写入后客户端里会看到</summary>
+      <div class="wc-chips">
+        <span v-for="name in previewList" :key="name" class="wc-chip">{{ name }}</span>
+        <span v-if="(preview || []).length > previewList.length" class="wc-more">…等 {{ (preview || []).length }} 个</span>
+      </div>
+    </details>
+  </section>
+</template>
+
 <script setup lang="ts">
 // 右侧「写入配置」卡片：紧跟在「目标信息」下面。
 //
@@ -29,37 +60,6 @@ const writeHint = computed(() => (props.writeDisabled ? props.writeReason : ''))
 const removeHint = computed(() => (props.removeDisabled ? props.removeReason : ''))
 const previewList = computed(() => (props.preview || []).slice(0, 6))
 </script>
-
-<template>
-  <section class="glass write-card" aria-label="写入配置">
-    <header class="wc-head">
-      <span class="wc-title">写入配置</span>
-      <span class="wc-count">{{ count }} 个模型</span>
-    </header>
-
-    <p class="wc-lead">写进 <b>{{ targetName }}</b>：只替换墨桥写入的条目，其它工具与你手写的配置原样保留。</p>
-
-    <NButton class="wc-btn" type="primary" size="small" block :disabled="writeDisabled" @click="emit('write')">
-      {{ writeLabel }}
-    </NButton>
-    <p v-if="writeHint" class="wc-reason warn">{{ writeHint }}</p>
-
-    <!-- 移除是危险操作，但不用粉红实心：和主按钮并排时两种填色会互相打架。
-         ghost 描边保留红色语义，同时跟整排「描边次按钮」是同一种气质。 -->
-    <NButton class="wc-btn" size="small" block ghost type="error" :disabled="removeDisabled" @click="emit('remove')">
-      移除配置
-    </NButton>
-    <p v-if="removeHint" class="wc-reason">{{ removeHint }}</p>
-
-    <details v-if="previewList.length" class="wc-preview">
-      <summary>写入后客户端里会看到</summary>
-      <div class="wc-chips">
-        <span v-for="name in previewList" :key="name" class="wc-chip">{{ name }}</span>
-        <span v-if="(preview || []).length > previewList.length" class="wc-more">…等 {{ (preview || []).length }} 个</span>
-      </div>
-    </details>
-  </section>
-</template>
 
 <style scoped>
 .write-card { display: flex; flex-direction: column; gap: 8px; padding: 13px 14px 14px; min-width: 0; }

@@ -1,3 +1,176 @@
+<template>
+  <NModal :show="show" @update:show="(v: boolean) => !v && emit('close')">
+    <div class="settings" role="dialog" aria-modal="true" aria-label="设置">
+      <header class="settings-head">
+        <h3>设置</h3>
+        <button class="settings-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+      </header>
+
+      <div class="settings-body">
+        <nav class="settings-nav" aria-label="设置分组">
+          <button v-for="sec in SECTIONS" :key="sec.key" type="button"
+            class="settings-nav-item" :class="{ active: activeSec === sec.key }"
+            :aria-current="activeSec === sec.key ? 'true' : undefined"
+            @click="goto(sec.key)">{{ sec.label }}</button>
+        </nav>
+
+        <div ref="panes" class="settings-panes" @scroll.passive="onPanesScroll">
+        <!-- 检测与缓存：服务侧旋钮 -->
+        <section class="settings-sec" data-sec="probe">
+          <h4>检测与缓存</h4>
+          <div v-for="f in FIELDS" :key="f.key" class="settings-row">
+            <div class="settings-label">
+              <span>{{ f.label }}</span>
+              <small>{{ f.hint }}</small>
+            </div>
+            <div class="settings-control">
+              <NInputNumber size="small" :value="draft[f.key]" :min="f.min" :max="f.max" :step="f.step"
+                :show-button="false" :disabled="!serviceReady" style="width: 92px"
+                @update:value="(v: number | null) => onNumber(f, v)" />
+              <span class="settings-unit">{{ f.unit }}</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>启动后自动检测</span>
+              <small>打开后每次启动跑一轮完整检测；关掉则只用上次的判定结果，省时间也省上游额度。</small>
+            </div>
+            <div class="settings-control">
+              <NSwitch size="small" :value="autoProbeShown" :disabled="!serviceReady"
+                @update:value="onAutoProbe" />
+            </div>
+          </div>
+        </section>
+
+        <!-- 本地端口：写进客户端的就是这两个口，改动会自动重启本地服务 -->
+        <section class="settings-sec" data-sec="ports">
+          <h4>本地端口</h4>
+          <div v-for="f in PORTS" :key="f.key" class="settings-row">
+            <div class="settings-label">
+              <span>{{ f.label }}</span>
+              <small>{{ f.hint }}</small>
+            </div>
+            <div class="settings-control">
+              <NInputNumber size="small" :value="draft[f.key]" :min="f.min" :max="f.max" :step="f.step"
+                :show-button="false" :disabled="!serviceReady" style="width: 92px"
+                @update:value="(v: number | null) => onNumber(f, v)" />
+              <span class="settings-unit">{{ f.unit }}</span>
+            </div>
+          </div>
+          <p class="settings-tip">
+            默认 {{ DEFAULTS.port }} / {{ DEFAULTS.atomcodePort }}（墨桥自己的号段）。改端口会重启本地服务，
+            期间检测与写入短暂不可用；已写入客户端的地址要重新写一次才会指向新端口。
+          </p>
+        </section>
+
+        <!-- 写入位置：三个目标的配置都可能被用户搬走，必须能看见、能改 -->
+        <section class="settings-sec" data-sec="paths">
+          <h4>写入位置</h4>
+          <p class="settings-tip">
+            墨桥默认按固定目录找这三个客户端的配置。如果你把数据目录搬过家，请在这里指定实际位置——
+            否则模型会写进一份客户端根本不读的文件。改完会重新体检，并把当前可用模型写到新位置。
+          </p>
+          <div v-for="t in PATH_TARGETS" :key="t" class="path-row">
+            <div class="path-head">
+              <strong>{{ TARGET_PATH_LABEL[t] }}</strong>
+              <span class="path-badge" :class="pathInfo[t]?.exists ? 'ok' : 'na'">{{ pathInfo[t]?.exists ? '已定位' : '未定位' }}</span>
+              <span v-if="pathInfo[t]?.configured" class="path-badge custom">手动指定</span>
+            </div>
+            <div class="path-value mono" :title="pathInfo[t]?.resolved || ''">{{ pathInfo[t]?.resolved || '—' }}</div>
+            <small class="path-hint">{{ pathInfo[t]?.note || PATH_HINT[t] }}</small>
+            <div class="path-actions">
+              <NButton v-if="t === 'workbuddy'" size="tiny" :disabled="pathBusy || !serviceReady" @click="askPath(t, 'auto')">自动查找</NButton>
+              <NButton size="tiny" :disabled="pathBusy" @click="askPath(t, 'pick')">更改…</NButton>
+              <NButton size="tiny" :disabled="pathBusy || !pathInfo[t]?.configured" @click="askPath(t, 'reset')">恢复默认</NButton>
+            </div>
+          </div>
+          <div v-if="pendingPath" class="path-confirm">
+            <p>
+              {{ pendingPath.mode === 'reset' ? '恢复' : '更换' }} {{ TARGET_PATH_LABEL[pendingPath.target] }} 的写入位置前，
+              会先从旧位置摘掉墨桥写过的条目（其它工具的配置不受影响），再按新位置重新写入。确认继续？
+            </p>
+            <div class="path-confirm-actions">
+              <NButton size="tiny" type="primary" :disabled="pathBusy" @click="confirmPath">确认</NButton>
+              <NButton size="tiny" :disabled="pathBusy" @click="pendingPath = null">取消</NButton>
+            </div>
+          </div>
+        </section>
+
+        <!-- 应用行为：主进程侧旋钮 -->
+        <section class="settings-sec" data-sec="app">
+          <h4>应用行为</h4>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>关闭窗口时</span>
+              <small>退出应用并停止本机服务，不在后台留常驻进程。已写入客户端的配置不会被动，下次启动时按当时的可用模型刷新。</small>
+            </div>
+            <div class="settings-control settings-mono">退出</div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>开机自动启动</span>
+              <small v-if="app && !app.supported">开发模式下不注册开机项（注册的会是临时路径）。装好之后这里才生效。</small>
+              <small v-else-if="app && app.autoLaunch && !app.autoLaunchActive">已保存为开启，但系统里当前没有这一项——可能被任务管理器或安全软件清掉了，重新打开一次会重新注册。</small>
+              <small v-else>登录 Windows 后自动在后台跑起来，客户端随时能用模型。</small>
+            </div>
+            <div class="settings-control">
+              <NSwitch size="small" :value="app?.autoLaunch === true" :disabled="appBusy || !app?.supported"
+                @update:value="(v: boolean) => patchApp({ autoLaunch: v })" />
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>启动时不弹窗口</span>
+              <small>开机拉起时只留托盘，不抢屏幕。手动打开不受影响。</small>
+            </div>
+            <div class="settings-control">
+              <NSwitch size="small" :value="app?.startHidden !== false" :disabled="appBusy || !app?.supported"
+                @update:value="(v: boolean) => patchApp({ startHidden: v })" />
+            </div>
+          </div>
+        </section>
+
+        <!-- 维护 -->
+        <section class="settings-sec" data-sec="maint">
+          <h4>维护</h4>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>判定缓存</span>
+              <small>现有 {{ cacheEntries }} 条结论。清空后下次检测会对每个模型真的发一次请求。</small>
+            </div>
+            <div class="settings-control">
+              <NButton size="tiny" :disabled="cacheBusy || !serviceReady" :loading="cacheBusy" @click="clearCache">清空</NButton>
+            </div>
+          </div>
+        </section>
+
+        <!-- 关于 -->
+        <section class="settings-sec" data-sec="about">
+          <h4>关于</h4>
+          <div class="settings-row">
+            <div class="settings-label"><span>版本</span></div>
+            <div class="settings-control settings-mono">{{ app?.appVersion || '—' }}</div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label"><span>数据目录</span><small>配置、日志与判定缓存都在这里。</small></div>
+            <div class="settings-control settings-mono" :title="app?.dataDir">{{ app?.dataDir || '—' }}</div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-label"><span>日志文件</span></div>
+            <div class="settings-control settings-mono" :title="app?.logFile">{{ app?.logFile || '—' }}</div>
+          </div>
+        </section>
+        </div>
+      </div>
+
+      <footer class="settings-foot">
+        <span class="settings-note">除端口外，其余改动即时生效，不需要重启。</span>
+        <NButton size="small" @click="emit('close')">关闭</NButton>
+      </footer>
+    </div>
+  </NModal>
+</template>
+
 <script setup lang="ts">
 // 设置面板：把原先散落在代码里的可调项集中到一处。
 //
@@ -271,179 +444,6 @@ async function confirmPath() {
   } finally { pathBusy.value = false }
 }
 </script>
-
-<template>
-  <NModal :show="show" @update:show="(v: boolean) => !v && emit('close')">
-    <div class="settings" role="dialog" aria-modal="true" aria-label="设置">
-      <header class="settings-head">
-        <h3>设置</h3>
-        <button class="settings-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
-      </header>
-
-      <div class="settings-body">
-        <nav class="settings-nav" aria-label="设置分组">
-          <button v-for="sec in SECTIONS" :key="sec.key" type="button"
-            class="settings-nav-item" :class="{ active: activeSec === sec.key }"
-            :aria-current="activeSec === sec.key ? 'true' : undefined"
-            @click="goto(sec.key)">{{ sec.label }}</button>
-        </nav>
-
-        <div ref="panes" class="settings-panes" @scroll.passive="onPanesScroll">
-        <!-- 检测与缓存：服务侧旋钮 -->
-        <section class="settings-sec" data-sec="probe">
-          <h4>检测与缓存</h4>
-          <div v-for="f in FIELDS" :key="f.key" class="settings-row">
-            <div class="settings-label">
-              <span>{{ f.label }}</span>
-              <small>{{ f.hint }}</small>
-            </div>
-            <div class="settings-control">
-              <NInputNumber size="small" :value="draft[f.key]" :min="f.min" :max="f.max" :step="f.step"
-                :show-button="false" :disabled="!serviceReady" style="width: 92px"
-                @update:value="(v: number | null) => onNumber(f, v)" />
-              <span class="settings-unit">{{ f.unit }}</span>
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">
-              <span>启动后自动检测</span>
-              <small>打开后每次启动跑一轮完整检测；关掉则只用上次的判定结果，省时间也省上游额度。</small>
-            </div>
-            <div class="settings-control">
-              <NSwitch size="small" :value="autoProbeShown" :disabled="!serviceReady"
-                @update:value="onAutoProbe" />
-            </div>
-          </div>
-        </section>
-
-        <!-- 本地端口：写进客户端的就是这两个口，改动会自动重启本地服务 -->
-        <section class="settings-sec" data-sec="ports">
-          <h4>本地端口</h4>
-          <div v-for="f in PORTS" :key="f.key" class="settings-row">
-            <div class="settings-label">
-              <span>{{ f.label }}</span>
-              <small>{{ f.hint }}</small>
-            </div>
-            <div class="settings-control">
-              <NInputNumber size="small" :value="draft[f.key]" :min="f.min" :max="f.max" :step="f.step"
-                :show-button="false" :disabled="!serviceReady" style="width: 92px"
-                @update:value="(v: number | null) => onNumber(f, v)" />
-              <span class="settings-unit">{{ f.unit }}</span>
-            </div>
-          </div>
-          <p class="settings-tip">
-            默认 {{ DEFAULTS.port }} / {{ DEFAULTS.atomcodePort }}（墨桥自己的号段）。改端口会重启本地服务，
-            期间检测与写入短暂不可用；已写入客户端的地址要重新写一次才会指向新端口。
-          </p>
-        </section>
-
-        <!-- 写入位置：三个目标的配置都可能被用户搬走，必须能看见、能改 -->
-        <section class="settings-sec" data-sec="paths">
-          <h4>写入位置</h4>
-          <p class="settings-tip">
-            墨桥默认按固定目录找这三个客户端的配置。如果你把数据目录搬过家，请在这里指定实际位置——
-            否则模型会写进一份客户端根本不读的文件。改完会重新体检，并把当前可用模型写到新位置。
-          </p>
-          <div v-for="t in PATH_TARGETS" :key="t" class="path-row">
-            <div class="path-head">
-              <strong>{{ TARGET_PATH_LABEL[t] }}</strong>
-              <span class="path-badge" :class="pathInfo[t]?.exists ? 'ok' : 'na'">{{ pathInfo[t]?.exists ? '已定位' : '未定位' }}</span>
-              <span v-if="pathInfo[t]?.configured" class="path-badge custom">手动指定</span>
-            </div>
-            <div class="path-value mono" :title="pathInfo[t]?.resolved || ''">{{ pathInfo[t]?.resolved || '—' }}</div>
-            <small class="path-hint">{{ pathInfo[t]?.note || PATH_HINT[t] }}</small>
-            <div class="path-actions">
-              <NButton v-if="t === 'workbuddy'" size="tiny" :disabled="pathBusy || !serviceReady" @click="askPath(t, 'auto')">自动查找</NButton>
-              <NButton size="tiny" :disabled="pathBusy" @click="askPath(t, 'pick')">更改…</NButton>
-              <NButton size="tiny" :disabled="pathBusy || !pathInfo[t]?.configured" @click="askPath(t, 'reset')">恢复默认</NButton>
-            </div>
-          </div>
-          <div v-if="pendingPath" class="path-confirm">
-            <p>
-              {{ pendingPath.mode === 'reset' ? '恢复' : '更换' }} {{ TARGET_PATH_LABEL[pendingPath.target] }} 的写入位置前，
-              会先从旧位置摘掉墨桥写过的条目（其它工具的配置不受影响），再按新位置重新写入。确认继续？
-            </p>
-            <div class="path-confirm-actions">
-              <NButton size="tiny" type="primary" :disabled="pathBusy" @click="confirmPath">确认</NButton>
-              <NButton size="tiny" :disabled="pathBusy" @click="pendingPath = null">取消</NButton>
-            </div>
-          </div>
-        </section>
-
-        <!-- 应用行为：主进程侧旋钮 -->
-        <section class="settings-sec" data-sec="app">
-          <h4>应用行为</h4>
-          <div class="settings-row">
-            <div class="settings-label">
-              <span>关闭窗口时</span>
-              <small>退出应用并停止本机服务，不在后台留常驻进程。已写入客户端的配置不会被动，下次启动时按当时的可用模型刷新。</small>
-            </div>
-            <div class="settings-control settings-mono">退出</div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">
-              <span>开机自动启动</span>
-              <small v-if="app && !app.supported">开发模式下不注册开机项（注册的会是临时路径）。装好之后这里才生效。</small>
-              <small v-else-if="app && app.autoLaunch && !app.autoLaunchActive">已保存为开启，但系统里当前没有这一项——可能被任务管理器或安全软件清掉了，重新打开一次会重新注册。</small>
-              <small v-else>登录 Windows 后自动在后台跑起来，客户端随时能用模型。</small>
-            </div>
-            <div class="settings-control">
-              <NSwitch size="small" :value="app?.autoLaunch === true" :disabled="appBusy || !app?.supported"
-                @update:value="(v: boolean) => patchApp({ autoLaunch: v })" />
-            </div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label">
-              <span>启动时不弹窗口</span>
-              <small>开机拉起时只留托盘，不抢屏幕。手动打开不受影响。</small>
-            </div>
-            <div class="settings-control">
-              <NSwitch size="small" :value="app?.startHidden !== false" :disabled="appBusy || !app?.supported"
-                @update:value="(v: boolean) => patchApp({ startHidden: v })" />
-            </div>
-          </div>
-        </section>
-
-        <!-- 维护 -->
-        <section class="settings-sec" data-sec="maint">
-          <h4>维护</h4>
-          <div class="settings-row">
-            <div class="settings-label">
-              <span>判定缓存</span>
-              <small>现有 {{ cacheEntries }} 条结论。清空后下次检测会对每个模型真的发一次请求。</small>
-            </div>
-            <div class="settings-control">
-              <NButton size="tiny" :disabled="cacheBusy || !serviceReady" :loading="cacheBusy" @click="clearCache">清空</NButton>
-            </div>
-          </div>
-        </section>
-
-        <!-- 关于 -->
-        <section class="settings-sec" data-sec="about">
-          <h4>关于</h4>
-          <div class="settings-row">
-            <div class="settings-label"><span>版本</span></div>
-            <div class="settings-control settings-mono">{{ app?.appVersion || '—' }}</div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label"><span>数据目录</span><small>配置、日志与判定缓存都在这里。</small></div>
-            <div class="settings-control settings-mono" :title="app?.dataDir">{{ app?.dataDir || '—' }}</div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-label"><span>日志文件</span></div>
-            <div class="settings-control settings-mono" :title="app?.logFile">{{ app?.logFile || '—' }}</div>
-          </div>
-        </section>
-        </div>
-      </div>
-
-      <footer class="settings-foot">
-        <span class="settings-note">除端口外，其余改动即时生效，不需要重启。</span>
-        <NButton size="small" @click="emit('close')">关闭</NButton>
-      </footer>
-    </div>
-  </NModal>
-</template>
 
 <style scoped>
 .settings {

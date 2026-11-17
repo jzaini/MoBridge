@@ -1,12 +1,3 @@
-<script setup lang="ts">
-// 浮层通知：右下角叠加，不占页面高度。
-// 结果类反馈（写入完成 / 检测结束 / 某步失败）走这里；破坏性操作仍然先弹确认框。
-import { useToasts } from '../composables/useService'
-
-const { toasts, dismissToast } = useToasts()
-const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
-</script>
-
 <template>
   <div class="toast-host" role="region" aria-label="操作结果通知">
     <TransitionGroup name="toast">
@@ -18,6 +9,15 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
     </TransitionGroup>
   </div>
 </template>
+
+<script setup lang="ts">
+// 浮层通知：右下角叠加，不占页面高度。
+// 结果类反馈（写入完成 / 检测结束 / 某步失败）走这里；破坏性操作仍然先弹确认框。
+import { useToasts } from '../composables/useService'
+
+const { toasts, dismissToast } = useToasts()
+const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
+</script>
 
 <style scoped>
 .toast-host {

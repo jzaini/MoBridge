@@ -1,3 +1,32 @@
+<template>
+  <NModal :show="show" @update:show="(v: boolean) => !v && emit('close')">
+    <div class="mo-modal mo-env-modal" role="dialog" aria-modal="true" aria-label="环境信息">
+      <div class="mo-modal-head">
+        <h3>环境信息</h3>
+        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+      </div>
+      <div class="mo-modal-body">
+        <p class="mo-env-note">上方状态面板已显示服务概览，这里只列连接、写入记录与说明等明细。</p>
+        <section v-for="g in groups" :key="g.title" class="mo-env-group">
+          <h4>{{ g.title }}</h4>
+          <dl class="mo-env-grid">
+            <template v-for="([label, value, kind]) in g.pairs" :key="label">
+              <dt>{{ label }}</dt>
+              <dd :title="String(value)">
+                <i v-if="kind" class="mo-dot" :class="kind" style="margin-right:6px"></i>{{ value }}
+              </dd>
+            </template>
+          </dl>
+        </section>
+        <p class="mo-env-note">模型清单来自 OpenCode 官方目录静态快照（非实时接口）；接口与配置仅保存在本机。检测会向每个模型发极小请求，使用少量免费额度。</p>
+      </div>
+      <div class="mo-modal-foot">
+        <NButton size="small" @click="emit('close')">关闭</NButton>
+      </div>
+    </div>
+  </NModal>
+</template>
+
 <script setup lang="ts">
 // 环境信息弹窗：状态面板之外的明细（连接与鉴权 / 写入记录），关键字段带绿/灰状态点。
 import { computed } from 'vue'
@@ -48,35 +77,6 @@ const groups = computed(() => {
   ]
 })
 </script>
-
-<template>
-  <NModal :show="show" @update:show="(v: boolean) => !v && emit('close')">
-    <div class="mo-modal mo-env-modal" role="dialog" aria-modal="true" aria-label="环境信息">
-      <div class="mo-modal-head">
-        <h3>环境信息</h3>
-        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
-      </div>
-      <div class="mo-modal-body">
-        <p class="mo-env-note">上方状态面板已显示服务概览，这里只列连接、写入记录与说明等明细。</p>
-        <section v-for="g in groups" :key="g.title" class="mo-env-group">
-          <h4>{{ g.title }}</h4>
-          <dl class="mo-env-grid">
-            <template v-for="([label, value, kind]) in g.pairs" :key="label">
-              <dt>{{ label }}</dt>
-              <dd :title="String(value)">
-                <i v-if="kind" class="mo-dot" :class="kind" style="margin-right:6px"></i>{{ value }}
-              </dd>
-            </template>
-          </dl>
-        </section>
-        <p class="mo-env-note">模型清单来自 OpenCode 官方目录静态快照（非实时接口）；接口与配置仅保存在本机。检测会向每个模型发极小请求，使用少量免费额度。</p>
-      </div>
-      <div class="mo-modal-foot">
-        <NButton size="small" @click="emit('close')">关闭</NButton>
-      </div>
-    </div>
-  </NModal>
-</template>
 
 <style scoped>
 .mo-env-modal { width: min(560px, calc(100vw - 48px)); }

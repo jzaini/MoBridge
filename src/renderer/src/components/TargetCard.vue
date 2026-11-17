@@ -1,33 +1,3 @@
-<script setup lang="ts">
-// 右侧「目标信息」卡片（液态玻璃）：只回答"写到哪个文件、那里此刻是什么状态"。
-//
-// 叫「目标信息」而不是「写入目标」，是因为写入动作已经挪到它下面的独立卡片里
-// （见 WriteCard）：这张卡负责"给事实"，那张卡负责"动手"。两者上下相邻，
-// 切换目标时按钮措辞与路径同时变，不会出现"步骤让我写入、按钮却在别处"的割裂。
-import { computed } from 'vue'
-import type { TargetInspection } from '@shared/types'
-
-const props = defineProps<{
-  target: string
-  path: string
-  summary?: string
-  inspection?: TargetInspection
-  busy: boolean
-}>()
-const emit = defineEmits<{
-  (e: 'switch', value: 'workbuddy' | 'dsh' | 'mofang'): void
-  (e: 'recheck'): void
-}>()
-
-const owned = computed(() => props.inspection?.owned ?? 0)
-const clientState = computed(() => {
-  const info = props.inspection
-  if (!info) return { text: '正在体检…', kind: 'na' as const }
-  if (!info.available) return { text: '未检测到客户端配置', kind: 'na' as const }
-  return { text: '配置已就位', kind: 'ok' as const }
-})
-</script>
-
 <template>
   <section class="glass target-card" aria-label="目标信息">
     <header class="tc-head">
@@ -65,6 +35,36 @@ const clientState = computed(() => {
     <slot name="extra" />
   </section>
 </template>
+
+<script setup lang="ts">
+// 右侧「目标信息」卡片（液态玻璃）：只回答"写到哪个文件、那里此刻是什么状态"。
+//
+// 叫「目标信息」而不是「写入目标」，是因为写入动作已经挪到它下面的独立卡片里
+// （见 WriteCard）：这张卡负责"给事实"，那张卡负责"动手"。两者上下相邻，
+// 切换目标时按钮措辞与路径同时变，不会出现"步骤让我写入、按钮却在别处"的割裂。
+import { computed } from 'vue'
+import type { TargetInspection } from '@shared/types'
+
+const props = defineProps<{
+  target: string
+  path: string
+  summary?: string
+  inspection?: TargetInspection
+  busy: boolean
+}>()
+const emit = defineEmits<{
+  (e: 'switch', value: 'workbuddy' | 'dsh' | 'mofang'): void
+  (e: 'recheck'): void
+}>()
+
+const owned = computed(() => props.inspection?.owned ?? 0)
+const clientState = computed(() => {
+  const info = props.inspection
+  if (!info) return { text: '正在体检…', kind: 'na' as const }
+  if (!info.available) return { text: '未检测到客户端配置', kind: 'na' as const }
+  return { text: '配置已就位', kind: 'ok' as const }
+})
+</script>
 
 <style scoped>
 .target-card { display: flex; flex-direction: column; gap: 9px; padding: 13px 14px 14px; min-width: 0; }

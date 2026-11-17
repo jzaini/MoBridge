@@ -1,3 +1,15 @@
+<template>
+  <Transition name="op">
+    <div v-if="op" class="op-bar glass" role="status" aria-live="polite">
+      <span class="op-spin" aria-hidden="true" />
+      <span class="op-label">{{ op.label }}</span>
+      <span v-if="op.detail" class="op-detail">{{ op.detail }}</span>
+      <span class="op-time">{{ seconds }}s</span>
+      <span v-if="percent != null" class="op-track" aria-hidden="true"><i :style="{ width: percent + '%' }" /></span>
+    </div>
+  </Transition>
+</template>
+
 <script setup lang="ts">
 // 常驻进度条：底部居中，只要服务在忙就一直挂着。
 //
@@ -35,18 +47,6 @@ const percent = computed(() => {
   return ratio == null ? null : Math.max(3, Math.min(100, Math.round(ratio * 100)))
 })
 </script>
-
-<template>
-  <Transition name="op">
-    <div v-if="op" class="op-bar glass" role="status" aria-live="polite">
-      <span class="op-spin" aria-hidden="true" />
-      <span class="op-label">{{ op.label }}</span>
-      <span v-if="op.detail" class="op-detail">{{ op.detail }}</span>
-      <span class="op-time">{{ seconds }}s</span>
-      <span v-if="percent != null" class="op-track" aria-hidden="true"><i :style="{ width: percent + '%' }" /></span>
-    </div>
-  </Transition>
-</template>
 
 <style scoped>
 .op-bar {

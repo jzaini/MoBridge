@@ -1,3 +1,71 @@
+<template>
+  <table class="mo-model-table" aria-label="OpenCode 免费模型清单">
+    <thead>
+      <tr>
+        <th class="mo-col-check">写入</th>
+        <th class="mo-col-name" title="主行是写入客户端后的名字（OC · 前缀标来源），副行是上游真名">模型</th><th class="mo-col-cap">能力</th><th class="mo-col-ctx">上下文</th>
+        <th class="mo-col-state">状态</th><th class="mo-col-time">耗时</th><th class="mo-col-act">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr v-for="m in models" :key="m.id"
+        :class="['mo-row', (availableModels.includes(m.id) && !excludedModels.includes(m.id)) ? '' : 'mo-unselected']">
+        <td class="mo-col-check">
+          <NCheckbox size="small"
+            :checked="availableModels.includes(m.id) && !excludedModels.includes(m.id)"
+            :disabled="busy || !availableModels.includes(m.id)"
+            :aria-label="'写入 ' + (m.name || shortId(m.id))"
+            @update:checked="(v: boolean) => emit('select', m.id, v)" />
+        </td>
+        <td class="mo-col-name">
+          <!-- 主名统一为「写入客户端名」：OC · 是来源前缀（与 service/domain/model-status.ts
+               的 clientModelID 一致），副名才是上游真名。三页口径一致，用户一眼能看到标识。 -->
+          <span class="mo-model-name">OC · {{ m.name || shortId(m.id) }}</span>
+          <span class="mo-model-id mono">{{ shortId(m.id) }}</span>
+        </td>
+        <td class="mo-col-cap">
+          <span v-for="c in capabilities(m)" :key="c" class="mo-cap">{{ c }}</span>
+        </td>
+        <td class="mo-col-ctx mono" :title="m.context ? m.context + ' tokens（OpenCode 声明值，非实测）' : 'OpenCode 未公开该模型的上下文窗口数值'">
+          <span :class="formatContext(m.context) === '—' ? 'mo-ctx-unknown' : ''">{{ formatContext(m.context) }}</span>
+        </td>
+        <td class="mo-col-state">
+          <div class="mo-state-wrap">
+            <span class="mo-state" :style="{ color: STATE_COLOR[status(m.id).cls] }">
+              <i class="mo-dot" :class="status(m.id).dot"></i>{{ status(m.id).label }}
+            </span>
+            <NTooltip v-if="status(m.id).reason" trigger="hover" placement="top">
+              <template #trigger>
+                <button class="mo-state-info" :class="{ error: status(m.id).bad }" type="button"
+                  :aria-label="(m.name || m.id) + ' 的失败原因'"
+                  @click.stop="emit('detail', m)">
+                  <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.4" />
+                    <path d="M8 7.2v4" stroke-linecap="round" />
+                    <circle cx="8" cy="4.6" r=".85" fill="currentColor" stroke="none" />
+                  </svg>
+                </button>
+              </template>
+              {{ status(m.id).reason }}
+            </NTooltip>
+          </div>
+        </td>
+        <td class="mo-col-time mono" :title="modelResults[m.id]?.source === 'cache' ? '缓存判定（非本次实发请求）' : (modelResults[m.id]?.durationMs != null ? '真实请求完整耗时' : '尚未检测，点「检测全部」或操作列「重测」得到')">
+          {{ timingText(m.id) }}
+        </td>
+        <td class="mo-col-act">
+          <NButton size="tiny" quaternary @click.stop="emit('detail', m)">详情</NButton>
+          <NButton size="tiny" quaternary :disabled="busy" title="只重测这一条模型（真实调用，消耗少量额度）"
+            @click.stop="emit('probe-one', m.id)">重测</NButton>
+        </td>
+      </tr>
+      <tr v-if="!models.length">
+        <td colspan="7" class="mo-table-empty">{{ emptyText || '没有符合当前筛选的模型' }}</td>
+      </tr>
+    </tbody>
+  </table>
+</template>
+
 <script setup lang="ts">
 // 模型清单表：写入勾选 / 模型 / 能力 / 上下文 / 状态 / 耗时 / 操作（详情+重测）。
 // 状态派生：探测中/请求中/可用/仅对话/不可用/待检测。
@@ -72,74 +140,6 @@ function shortId(id: string): string {
   return String(id || '').replace(/^opencode\//, '')
 }
 </script>
-
-<template>
-  <table class="mo-model-table" aria-label="OpenCode 免费模型清单">
-    <thead>
-      <tr>
-        <th class="mo-col-check">写入</th>
-        <th class="mo-col-name" title="主行是写入客户端后的名字（OC · 前缀标来源），副行是上游真名">模型</th><th class="mo-col-cap">能力</th><th class="mo-col-ctx">上下文</th>
-        <th class="mo-col-state">状态</th><th class="mo-col-time">耗时</th><th class="mo-col-act">操作</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr v-for="m in models" :key="m.id"
-        :class="['mo-row', (availableModels.includes(m.id) && !excludedModels.includes(m.id)) ? '' : 'mo-unselected']">
-        <td class="mo-col-check">
-          <NCheckbox size="small"
-            :checked="availableModels.includes(m.id) && !excludedModels.includes(m.id)"
-            :disabled="busy || !availableModels.includes(m.id)"
-            :aria-label="'写入 ' + (m.name || shortId(m.id))"
-            @update:checked="(v: boolean) => emit('select', m.id, v)" />
-        </td>
-        <td class="mo-col-name">
-          <!-- 主名统一为「写入客户端名」：OC · 是来源前缀（与 service/domain/model-status.ts
-               的 clientModelID 一致），副名才是上游真名。三页口径一致，用户一眼能看到标识。 -->
-          <span class="mo-model-name">OC · {{ m.name || shortId(m.id) }}</span>
-          <span class="mo-model-id mono">{{ shortId(m.id) }}</span>
-        </td>
-        <td class="mo-col-cap">
-          <span v-for="c in capabilities(m)" :key="c" class="mo-cap">{{ c }}</span>
-        </td>
-        <td class="mo-col-ctx mono" :title="m.context ? m.context + ' tokens（OpenCode 声明值，非实测）' : 'OpenCode 未公开该模型的上下文窗口数值'">
-          <span :class="formatContext(m.context) === '—' ? 'mo-ctx-unknown' : ''">{{ formatContext(m.context) }}</span>
-        </td>
-        <td class="mo-col-state">
-          <div class="mo-state-wrap">
-            <span class="mo-state" :style="{ color: STATE_COLOR[status(m.id).cls] }">
-              <i class="mo-dot" :class="status(m.id).dot"></i>{{ status(m.id).label }}
-            </span>
-            <NTooltip v-if="status(m.id).reason" trigger="hover" placement="top">
-              <template #trigger>
-                <button class="mo-state-info" :class="{ error: status(m.id).bad }" type="button"
-                  :aria-label="(m.name || m.id) + ' 的失败原因'"
-                  @click.stop="emit('detail', m)">
-                  <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
-                    <circle cx="8" cy="8" r="6.4" />
-                    <path d="M8 7.2v4" stroke-linecap="round" />
-                    <circle cx="8" cy="4.6" r=".85" fill="currentColor" stroke="none" />
-                  </svg>
-                </button>
-              </template>
-              {{ status(m.id).reason }}
-            </NTooltip>
-          </div>
-        </td>
-        <td class="mo-col-time mono" :title="modelResults[m.id]?.source === 'cache' ? '缓存判定（非本次实发请求）' : (modelResults[m.id]?.durationMs != null ? '真实请求完整耗时' : '尚未检测，点「检测全部」或操作列「重测」得到')">
-          {{ timingText(m.id) }}
-        </td>
-        <td class="mo-col-act">
-          <NButton size="tiny" quaternary @click.stop="emit('detail', m)">详情</NButton>
-          <NButton size="tiny" quaternary :disabled="busy" title="只重测这一条模型（真实调用，消耗少量额度）"
-            @click.stop="emit('probe-one', m.id)">重测</NButton>
-        </td>
-      </tr>
-      <tr v-if="!models.length">
-        <td colspan="7" class="mo-table-empty">{{ emptyText || '没有符合当前筛选的模型' }}</td>
-      </tr>
-    </tbody>
-  </table>
-</template>
 
 <style scoped>
 .mo-model-table { width: 100%; border-spacing: 0; table-layout: fixed; text-align: center; }

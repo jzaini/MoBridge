@@ -1,3 +1,47 @@
+<template>
+  <NModal :show="show && !!model" @update:show="(v: boolean) => !v && emit('close')">
+    <div class="mo-modal mo-detail-modal" role="dialog" aria-modal="true" :aria-label="model?.name || '模型详情'">
+      <div class="mo-modal-head">
+        <h3>{{ model?.name || shortId(model?.id) }}</h3>
+        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+      </div>
+      <div class="mo-modal-body">
+        <section class="mo-d-section">
+          <h4>模型信息</h4>
+          <dl class="mo-d-grid">
+            <template v-for="([label, value]) in info" :key="label">
+              <dt>{{ label }}</dt><dd>{{ value }}</dd>
+            </template>
+            <template v-if="variants">
+              <dt>推理档位</dt><dd>{{ variants }}</dd>
+            </template>
+          </dl>
+        </section>
+        <section class="mo-d-section">
+          <h4>检测结果</h4>
+          <div class="mo-reason" :class="result.cls">
+            <strong>{{ result.title }}</strong>
+            <p v-for="(line, i) in result.lines" :key="i">{{ line }}</p>
+          </div>
+          <dl class="mo-d-grid">
+            <template v-for="([label, value]) in meta" :key="label">
+              <dt>{{ label }}</dt><dd>{{ value }}</dd>
+            </template>
+          </dl>
+        </section>
+        <section class="mo-d-section">
+          <h4>口径说明</h4>
+          <p class="mo-d-note">「—」表示 OpenCode 未公开该模型的上下文窗口数值；页面不编造，写入客户端时使用保守默认值。</p>
+          <p class="mo-d-note">上下文与能力来自 OpenCode 官方目录静态快照（非实时接口），是声明值而非实测；耗时来自真实请求，为完整请求用时而非首字延迟。不可用模型仅在本窗口保留，不供客户端使用。</p>
+        </section>
+      </div>
+      <div class="mo-modal-foot">
+        <NButton size="small" @click="emit('close')">关闭</NButton>
+      </div>
+    </div>
+  </NModal>
+</template>
+
 <script setup lang="ts">
 // 模型详情弹窗：模型信息 + 检测结果（失败原因/耗时/判定来源）+ 口径说明。
 import { computed } from 'vue'
@@ -80,50 +124,6 @@ const info = computed(() => {
 })
 const variants = computed(() => Object.keys(props.model?.variants || {}).join(' / '))
 </script>
-
-<template>
-  <NModal :show="show && !!model" @update:show="(v: boolean) => !v && emit('close')">
-    <div class="mo-modal mo-detail-modal" role="dialog" aria-modal="true" :aria-label="model?.name || '模型详情'">
-      <div class="mo-modal-head">
-        <h3>{{ model?.name || shortId(model?.id) }}</h3>
-        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
-      </div>
-      <div class="mo-modal-body">
-        <section class="mo-d-section">
-          <h4>模型信息</h4>
-          <dl class="mo-d-grid">
-            <template v-for="([label, value]) in info" :key="label">
-              <dt>{{ label }}</dt><dd>{{ value }}</dd>
-            </template>
-            <template v-if="variants">
-              <dt>推理档位</dt><dd>{{ variants }}</dd>
-            </template>
-          </dl>
-        </section>
-        <section class="mo-d-section">
-          <h4>检测结果</h4>
-          <div class="mo-reason" :class="result.cls">
-            <strong>{{ result.title }}</strong>
-            <p v-for="(line, i) in result.lines" :key="i">{{ line }}</p>
-          </div>
-          <dl class="mo-d-grid">
-            <template v-for="([label, value]) in meta" :key="label">
-              <dt>{{ label }}</dt><dd>{{ value }}</dd>
-            </template>
-          </dl>
-        </section>
-        <section class="mo-d-section">
-          <h4>口径说明</h4>
-          <p class="mo-d-note">「—」表示 OpenCode 未公开该模型的上下文窗口数值；页面不编造，写入客户端时使用保守默认值。</p>
-          <p class="mo-d-note">上下文与能力来自 OpenCode 官方目录静态快照（非实时接口），是声明值而非实测；耗时来自真实请求，为完整请求用时而非首字延迟。不可用模型仅在本窗口保留，不供客户端使用。</p>
-        </section>
-      </div>
-      <div class="mo-modal-foot">
-        <NButton size="small" @click="emit('close')">关闭</NButton>
-      </div>
-    </div>
-  </NModal>
-</template>
 
 <style scoped>
 .mo-detail-modal { width: min(600px, calc(100vw - 48px)); }

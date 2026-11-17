@@ -1,3 +1,30 @@
+<template>
+  <section class="glass config-card" aria-label="接入信息">
+    <header class="cc-head">
+      <span class="cc-title">接入信息</span>
+      <span class="cc-badge" :class="owned ? 'ok' : 'na'">{{ owned ? '已写入 ' + owned + ' 个' : '未写入' }}</span>
+    </header>
+
+    <dl class="cc-facts">
+      <div v-for="row in rows" :key="row.label">
+        <dt>{{ row.label }}</dt>
+        <dd :class="[{ mono: row.mono }, row.kind || '']" :title="row.title || row.value">{{ row.value }}</dd>
+      </div>
+    </dl>
+
+    <div v-if="ids.length" class="cc-models">
+      <span class="cc-models-label">客户端里的墨桥条目</span>
+      <div class="cc-chips">
+        <span v-for="id in shown" :key="id" class="cc-chip" :title="id">{{ id }}</span>
+        <span v-if="restCount" class="cc-more">…等 {{ ids.length }} 个</span>
+      </div>
+    </div>
+    <p v-else class="cc-empty">当前目标里还没有本页写入的条目；写入后这里会列出具体模型。</p>
+
+    <p v-if="others.length" class="cc-other">同一份配置里还有 {{ others.join('、') }}，那不是本页写的。</p>
+  </section>
+</template>
+
 <script setup lang="ts">
 // 「接入信息」卡片：常驻在目标信息上方，回答"这条接入线此刻是什么样的"。
 //
@@ -49,33 +76,6 @@ const ids = computed(() => {
 const shown = computed(() => ids.value.slice(0, 6))
 const restCount = computed(() => Math.max(0, ids.value.length - shown.value.length))
 </script>
-
-<template>
-  <section class="glass config-card" aria-label="接入信息">
-    <header class="cc-head">
-      <span class="cc-title">接入信息</span>
-      <span class="cc-badge" :class="owned ? 'ok' : 'na'">{{ owned ? '已写入 ' + owned + ' 个' : '未写入' }}</span>
-    </header>
-
-    <dl class="cc-facts">
-      <div v-for="row in rows" :key="row.label">
-        <dt>{{ row.label }}</dt>
-        <dd :class="[{ mono: row.mono }, row.kind || '']" :title="row.title || row.value">{{ row.value }}</dd>
-      </div>
-    </dl>
-
-    <div v-if="ids.length" class="cc-models">
-      <span class="cc-models-label">客户端里的墨桥条目</span>
-      <div class="cc-chips">
-        <span v-for="id in shown" :key="id" class="cc-chip" :title="id">{{ id }}</span>
-        <span v-if="restCount" class="cc-more">…等 {{ ids.length }} 个</span>
-      </div>
-    </div>
-    <p v-else class="cc-empty">当前目标里还没有本页写入的条目；写入后这里会列出具体模型。</p>
-
-    <p v-if="others.length" class="cc-other">同一份配置里还有 {{ others.join('、') }}，那不是本页写的。</p>
-  </section>
-</template>
 
 <style scoped>
 .config-card { display: flex; flex-direction: column; gap: 8px; padding: 13px 14px 14px; min-width: 0; }

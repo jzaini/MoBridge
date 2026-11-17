@@ -1,22 +1,3 @@
-<script setup lang="ts">
-// 竖向步骤栏：左侧占满整列。
-// 「已完成的步骤」可以回看，未到达的步骤点不动——避免用户跳过前置条件直接看后面的空页面。
-//
-// 可收起：收起后只剩一列序号（44px 宽），把横向空间让给模型表。
-// 收起状态由页面持有并持久化（见 composables/useRail），切页签也保持一致。
-import type { RailStep } from '../utils/steps'
-
-const props = defineProps<{ steps: RailStep[], active: string, collapsed?: boolean }>()
-const emit = defineEmits<{
-  (e: 'update:active', key: string): void
-  (e: 'toggle'): void
-}>()
-
-function reachable(step: RailStep): boolean { return step.state !== 'todo' }
-const index = () => props.steps.findIndex(step => step.key === props.active)
-const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.length} 步`
-</script>
-
 <template>
   <nav class="rail" :data-collapsed="collapsed === true" aria-label="接入步骤">
     <div class="rail-head">
@@ -46,6 +27,25 @@ const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.leng
     </div>
   </nav>
 </template>
+
+<script setup lang="ts">
+// 竖向步骤栏：左侧占满整列。
+// 「已完成的步骤」可以回看，未到达的步骤点不动——避免用户跳过前置条件直接看后面的空页面。
+//
+// 可收起：收起后只剩一列序号（44px 宽），把横向空间让给模型表。
+// 收起状态由页面持有并持久化（见 composables/useRail），切页签也保持一致。
+import type { RailStep } from '../utils/steps'
+
+const props = defineProps<{ steps: RailStep[], active: string, collapsed?: boolean }>()
+const emit = defineEmits<{
+  (e: 'update:active', key: string): void
+  (e: 'toggle'): void
+}>()
+
+function reachable(step: RailStep): boolean { return step.state !== 'todo' }
+const index = () => props.steps.findIndex(step => step.key === props.active)
+const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.length} 步`
+</script>
 
 <style scoped>
 .rail { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; }

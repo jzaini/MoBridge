@@ -1,3 +1,175 @@
+<template>
+  <div class="plan" :class="{ 'rail-collapsed': railCollapsed }">
+    <!-- 左：步骤栏（占满整列高度，可收起） -->
+    <div class="plan-rail">
+      <StepRail v-model:active="active" :steps="rail" :collapsed="railCollapsed" @toggle="toggleRail">
+        <template #foot>
+          检测只发极小请求，不会消耗对话额度；不可用模型只在本次会话保留，不写入客户端。
+        </template>
+      </StepRail>
+    </div>
+
+    <!-- 中：当前步骤 -->
+    <div class="plan-main">
+      <header class="stage-head">
+        <div class="stage-title">
+          <h2>{{ active === 'connect' ? '连接模型服务' : '检测并挑选模型' }}</h2>
+          <p class="stage-sub">{{ caption }}</p>
+        </div>
+        <div class="stage-actions">
+          <template v-if="active === 'connect'">
+            <NButton size="small" :disabled="busy" title="查看连接、写入记录与说明等环境明细" @click="envShow = true">环境信息</NButton>
+            <NButton v-if="st.phase === 'error' || st.phase === 'stopped'" size="small" type="warning" :disabled="opBusy" title="服务出错或停止时重新启动隔离模型服务" @click="runAction('restart')">重启服务</NButton>
+          </template>
+          <template v-else>
+            <NButton size="small" :disabled="busy" title="重新读取 OpenCode 免费模型目录（只刷新清单，不影响当前步骤）" @click="runAction('refresh')">刷新目录</NButton>
+            <NButton size="small" type="primary" :disabled="busy" title="向每个模型发极小请求，得到真实可用性与耗时" @click="runAction('probe')">检测全部</NButton>
+            <NButton size="small" :disabled="busy" title="只检测当前勾选的可用模型，更省额度" @click="doProbeSelected">检测选中</NButton>
+          </template>
+        </div>
+      </header>
+
+      <!-- 第 1 步：连接服务 -->
+      <section v-if="active === 'connect'" class="pane" aria-label="连接服务">
+        <div class="pane-head">
+          <h3>隔离模型服务</h3>
+          <p>墨桥在本机起一个独立的模型服务，页面通过它与上游对话。这里只关心它有没有起来、跑在哪个地址。</p>
+        </div>
+        <div class="pane-body">
+          <StatusPanel :state="st" @open-env="envShow = true" />
+          <h4 class="sec-title">这一步在看什么</h4>
+          <ul class="review-list guide">
+            <li><b>阶段/版本</b>：隔离模型服务有没有起来、跑的是哪个版本。</li>
+            <li><b>转发口</b>：客户端以后要连的本机地址——不是上游地址，凭据不落到客户端。</li>
+            <li><b>上次同步</b>：上一次写入的目标、模型数量与时间。</li>
+          </ul>
+          <p class="legend">
+            服务未就绪时，检测与写入都会不可用。若一直停在「启动中」，点右上「重启服务」或看「环境信息」里的日志位置。
+          </p>
+        </div>
+      </section>
+
+      <!-- 第 2 步：检测并挑选模型 -->
+      <section v-else class="pane table-pane" aria-label="检测并挑选模型">
+        <div class="pane-head with-stats">
+          <div>
+            <h3>免费模型清单</h3>
+            <p>{{ tableHint }}</p>
+          </div>
+          <!-- 三个数字挤成一条：原来是大号指标单起一行，把表格往下压了一整行。 -->
+          <div class="stat-strip" role="group" aria-label="模型统计">
+            <div class="stat"><span class="stat-v">{{ metricModels }}</span><span class="stat-k">模型</span></div>
+            <div class="stat"><span class="stat-v" :class="metricAvailable ? 'ok' : 'na'">{{ metricAvailable }}</span><span class="stat-k">可用</span></div>
+            <div class="stat"><span class="stat-v">{{ metricContext }}</span><span class="stat-k">最大上下文</span></div>
+          </div>
+        </div>
+
+        <div v-if="showFailureDiag" class="diag">
+          <b>{{ allModels.length }} 个模型全部不可用</b>
+          <p>检测是向每个模型真实发一次极小请求，下面的结论来自上游返回，相同原因已合并：</p>
+          <ul class="diag-list">
+            <li v-for="group in failureGroups" :key="group.reason">{{ group.count }} 个 · <code>{{ group.reason }}</code></li>
+          </ul>
+          <p class="diag-foot">
+            出现「Free usage exceeded」「quota」这类字样表示上游免费额度此刻已用尽，不是本机配置写错了；
+            换个时间段点「检测全部」重试即可。检测只发极小请求。
+          </p>
+        </div>
+
+        <div class="pane-toolbar">
+          <label class="check-inline">
+            <NCheckbox size="small" :checked="allChecked" :indeterminate="allIndeterminate"
+              :disabled="opBusy || !visibleEnabled.length"
+              aria-label="全选或取消全选当前可见可用模型"
+              @update:checked="onSelectAll" />
+            <span>全选</span>
+          </label>
+          <NButton size="tiny" :disabled="opBusy || !availableModels.length" title="只勾选检测结果为「可用」的模型" @click="bulkSelect('available')">只勾选可用</NButton>
+          <label class="check-inline" title="只展示检测可用的模型；关闭后展示全部模型">
+            <NCheckbox size="small" :checked="onlyUsable" @update:checked="setOnlyUsable" />
+            <span>只看可用</span>
+          </label>
+          <div class="toolbar-right">
+            <span class="sel-strong">{{ selectionSummary }}</span>
+            <span class="toolbar-hint">{{ filterHint }}</span>
+          </div>
+        </div>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="OpenCode 免费模型清单">
+          <ModelTable :models="modelRows" :model-results="modelResults" :available-models="availableModels"
+            :excluded-models="excludedModels" :probe="probe" :activity="activity" :busy="opBusy" :empty-text="emptyText"
+            @select="onSelect" @probe-one="onProbeOne" @detail="onDetail" />
+        </div>
+        <p class="legend">勾选即"要写入"；「—」表示 OpenCode 未公开该模型的上下文窗口数值，页面不编造，写入客户端时使用保守默认值。主行是写入客户端后的名字，<code>OC · / AC · / SN ·</code> 是三路来源前缀，防止同名模型互相覆盖。选好之后在右侧「写入配置」里按目标写入。</p>
+      </section>
+
+      <footer class="page-foot">
+        <span>接口与配置仅存本机；免费模型来自 OpenCode 官方目录静态快照</span>
+        <span>耗时为完整请求用时</span>
+      </footer>
+    </div>
+
+    <!-- 右：目标信息 + 写入配置 -->
+    <div class="plan-aside">
+      <!-- 配置信息在最上面：选模型时想确认"现在客户端里是什么配置"，
+           一眼就能看到，不用翻弹窗。 -->
+      <ConfigCard route="opencode" :rows="infoRows" :inspection="inspection" />
+
+      <TargetCard :target="st.target || 'workbuddy'" :path="targetPath()"
+        :summary="summary" :inspection="inspection" :busy="busy"
+        @switch="switchTarget" @recheck="recheck">
+        <template #extra>
+          <label class="proxy-toggle" title="让隔离模型服务走系统代理">
+            <NCheckbox size="small" :checked="st.useSystemProxy === true"
+              :disabled="opBusy || (st.phase !== 'ready' && st.phase !== 'error')"
+              @update:checked="onProxyToggle" />
+            <span>系统代理</span>
+          </label>
+          <p class="tc-extra-hint">{{ selectedCountText }}</p>
+        </template>
+      </TargetCard>
+
+      <!-- 写入只在"检测并挑选模型"这一步出现：第 1 步还没模型可写，
+           摆一个全是禁用原因的按钮只是噪音。 -->
+      <WriteCard v-if="active === 'probe'" :target-name="targetName()" :write-label="writeLabel" :count="checkedIds.length"
+        :write-disabled="busy || !canWrite" :write-reason="writeReason"
+        :remove-disabled="busy || !canRemove" :remove-reason="removeReason" :preview="previewNames"
+        @write="writeConfirm = true" @remove="removeConfirm = true" />
+    </div>
+
+    <ConfirmModal :show="writeConfirm" title="确认写入配置" ok-text="确认写入" @close="writeConfirm = false" @ok="doWrite">
+      <section class="confirm-sec">
+        <h4>写入内容</h4>
+        <dl class="confirm-grid">
+          <dt>写入目标</dt><dd>{{ targetName() }}</dd>
+          <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
+          <dt>将写入模型</dt><dd>{{ checkedIds.length }} 个（当前已选的可用模型）</dd>
+          <dt>写入方式</dt><dd>带 owner 标记的覆盖式同步，只替换本插件写入的条目</dd>
+        </dl>
+        <p class="confirm-note">{{ checkedIds.length
+          ? '确认后会把 ' + checkedIds.length + ' 个可用模型写入 ' + targetName() + '，完成后会有浮层提示。'
+          : '当前没有勾选任何可用模型，写入将清空本插件在 ' + targetName() + ' 的条目，不会动其它工具的配置。' }}</p>
+      </section>
+    </ConfirmModal>
+
+    <ConfirmModal :show="removeConfirm" title="确认移除配置" ok-text="确认移除" danger @close="removeConfirm = false" @ok="doRemove">
+      <section class="confirm-sec">
+        <h4>移除内容</h4>
+        <dl class="confirm-grid">
+          <dt>写入目标</dt><dd>{{ targetName() }}</dd>
+          <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
+          <dt>将移除条目</dt><dd>{{ owned }} 个 · 仅 OpenCode 接入写入的条目（AtomCode、日日新与你自己写的配置原样保留）</dd>
+          <dt>本机数据</dt><dd>API Key 与勾选记录不受影响，可随时重新写入</dd>
+        </dl>
+        <p class="confirm-note">移除后，{{ targetName() }} 里由 OpenCode 接入写入的模型将不可用。</p>
+      </section>
+    </ConfirmModal>
+
+    <EnvModal :show="envShow" :state="st" @close="envShow = false" />
+    <DetailModal :show="!!detailModel" :model="detailModel" :model-results="modelResults"
+      :available-models="availableModels" :probe="probe" :activity="activity" @close="detailModel = null" />
+  </div>
+</template>
+
 <script setup lang="ts">
 // OpenCode 接入视图：免费模型目录读取、真实探测、勾选写入。
 // 页面结构是「左步骤栏 + 中间当前步骤 + 右列（目标信息 / 写入配置）」：
@@ -358,178 +530,6 @@ function onSelect(id: string, checked: boolean) { void runAction('selection', { 
 function onProbeOne(id: string) { void runAction('probe', id) }
 function onDetail(m: ModelRow) { detailModel.value = m }
 </script>
-
-<template>
-  <div class="plan" :class="{ 'rail-collapsed': railCollapsed }">
-    <!-- 左：步骤栏（占满整列高度，可收起） -->
-    <div class="plan-rail">
-      <StepRail v-model:active="active" :steps="rail" :collapsed="railCollapsed" @toggle="toggleRail">
-        <template #foot>
-          检测只发极小请求，不会消耗对话额度；不可用模型只在本次会话保留，不写入客户端。
-        </template>
-      </StepRail>
-    </div>
-
-    <!-- 中：当前步骤 -->
-    <div class="plan-main">
-      <header class="stage-head">
-        <div class="stage-title">
-          <h2>{{ active === 'connect' ? '连接模型服务' : '检测并挑选模型' }}</h2>
-          <p class="stage-sub">{{ caption }}</p>
-        </div>
-        <div class="stage-actions">
-          <template v-if="active === 'connect'">
-            <NButton size="small" :disabled="busy" title="查看连接、写入记录与说明等环境明细" @click="envShow = true">环境信息</NButton>
-            <NButton v-if="st.phase === 'error' || st.phase === 'stopped'" size="small" type="warning" :disabled="opBusy" title="服务出错或停止时重新启动隔离模型服务" @click="runAction('restart')">重启服务</NButton>
-          </template>
-          <template v-else>
-            <NButton size="small" :disabled="busy" title="重新读取 OpenCode 免费模型目录（只刷新清单，不影响当前步骤）" @click="runAction('refresh')">刷新目录</NButton>
-            <NButton size="small" type="primary" :disabled="busy" title="向每个模型发极小请求，得到真实可用性与耗时" @click="runAction('probe')">检测全部</NButton>
-            <NButton size="small" :disabled="busy" title="只检测当前勾选的可用模型，更省额度" @click="doProbeSelected">检测选中</NButton>
-          </template>
-        </div>
-      </header>
-
-      <!-- 第 1 步：连接服务 -->
-      <section v-if="active === 'connect'" class="pane" aria-label="连接服务">
-        <div class="pane-head">
-          <h3>隔离模型服务</h3>
-          <p>墨桥在本机起一个独立的模型服务，页面通过它与上游对话。这里只关心它有没有起来、跑在哪个地址。</p>
-        </div>
-        <div class="pane-body">
-          <StatusPanel :state="st" @open-env="envShow = true" />
-          <h4 class="sec-title">这一步在看什么</h4>
-          <ul class="review-list guide">
-            <li><b>阶段/版本</b>：隔离模型服务有没有起来、跑的是哪个版本。</li>
-            <li><b>转发口</b>：客户端以后要连的本机地址——不是上游地址，凭据不落到客户端。</li>
-            <li><b>上次同步</b>：上一次写入的目标、模型数量与时间。</li>
-          </ul>
-          <p class="legend">
-            服务未就绪时，检测与写入都会不可用。若一直停在「启动中」，点右上「重启服务」或看「环境信息」里的日志位置。
-          </p>
-        </div>
-      </section>
-
-      <!-- 第 2 步：检测并挑选模型 -->
-      <section v-else class="pane table-pane" aria-label="检测并挑选模型">
-        <div class="pane-head with-stats">
-          <div>
-            <h3>免费模型清单</h3>
-            <p>{{ tableHint }}</p>
-          </div>
-          <!-- 三个数字挤成一条：原来是大号指标单起一行，把表格往下压了一整行。 -->
-          <div class="stat-strip" role="group" aria-label="模型统计">
-            <div class="stat"><span class="stat-v">{{ metricModels }}</span><span class="stat-k">模型</span></div>
-            <div class="stat"><span class="stat-v" :class="metricAvailable ? 'ok' : 'na'">{{ metricAvailable }}</span><span class="stat-k">可用</span></div>
-            <div class="stat"><span class="stat-v">{{ metricContext }}</span><span class="stat-k">最大上下文</span></div>
-          </div>
-        </div>
-
-        <div v-if="showFailureDiag" class="diag">
-          <b>{{ allModels.length }} 个模型全部不可用</b>
-          <p>检测是向每个模型真实发一次极小请求，下面的结论来自上游返回，相同原因已合并：</p>
-          <ul class="diag-list">
-            <li v-for="group in failureGroups" :key="group.reason">{{ group.count }} 个 · <code>{{ group.reason }}</code></li>
-          </ul>
-          <p class="diag-foot">
-            出现「Free usage exceeded」「quota」这类字样表示上游免费额度此刻已用尽，不是本机配置写错了；
-            换个时间段点「检测全部」重试即可。检测只发极小请求。
-          </p>
-        </div>
-
-        <div class="pane-toolbar">
-          <label class="check-inline">
-            <NCheckbox size="small" :checked="allChecked" :indeterminate="allIndeterminate"
-              :disabled="opBusy || !visibleEnabled.length"
-              aria-label="全选或取消全选当前可见可用模型"
-              @update:checked="onSelectAll" />
-            <span>全选</span>
-          </label>
-          <NButton size="tiny" :disabled="opBusy || !availableModels.length" title="只勾选检测结果为「可用」的模型" @click="bulkSelect('available')">只勾选可用</NButton>
-          <label class="check-inline" title="只展示检测可用的模型；关闭后展示全部模型">
-            <NCheckbox size="small" :checked="onlyUsable" @update:checked="setOnlyUsable" />
-            <span>只看可用</span>
-          </label>
-          <div class="toolbar-right">
-            <span class="sel-strong">{{ selectionSummary }}</span>
-            <span class="toolbar-hint">{{ filterHint }}</span>
-          </div>
-        </div>
-        <div class="table-scroll" tabindex="0" role="region" aria-label="OpenCode 免费模型清单">
-          <ModelTable :models="modelRows" :model-results="modelResults" :available-models="availableModels"
-            :excluded-models="excludedModels" :probe="probe" :activity="activity" :busy="opBusy" :empty-text="emptyText"
-            @select="onSelect" @probe-one="onProbeOne" @detail="onDetail" />
-        </div>
-        <p class="legend">勾选即"要写入"；「—」表示 OpenCode 未公开该模型的上下文窗口数值，页面不编造，写入客户端时使用保守默认值。主行是写入客户端后的名字，<code>OC · / AC · / SN ·</code> 是三路来源前缀，防止同名模型互相覆盖。选好之后在右侧「写入配置」里按目标写入。</p>
-      </section>
-
-      <footer class="page-foot">
-        <span>接口与配置仅存本机；免费模型来自 OpenCode 官方目录静态快照</span>
-        <span>耗时为完整请求用时</span>
-      </footer>
-    </div>
-
-    <!-- 右：目标信息 + 写入配置 -->
-    <div class="plan-aside">
-      <!-- 配置信息在最上面：选模型时想确认"现在客户端里是什么配置"，
-           一眼就能看到，不用翻弹窗。 -->
-      <ConfigCard route="opencode" :rows="infoRows" :inspection="inspection" />
-
-      <TargetCard :target="st.target || 'workbuddy'" :path="targetPath()"
-        :summary="summary" :inspection="inspection" :busy="busy"
-        @switch="switchTarget" @recheck="recheck">
-        <template #extra>
-          <label class="proxy-toggle" title="让隔离模型服务走系统代理">
-            <NCheckbox size="small" :checked="st.useSystemProxy === true"
-              :disabled="opBusy || (st.phase !== 'ready' && st.phase !== 'error')"
-              @update:checked="onProxyToggle" />
-            <span>系统代理</span>
-          </label>
-          <p class="tc-extra-hint">{{ selectedCountText }}</p>
-        </template>
-      </TargetCard>
-
-      <!-- 写入只在"检测并挑选模型"这一步出现：第 1 步还没模型可写，
-           摆一个全是禁用原因的按钮只是噪音。 -->
-      <WriteCard v-if="active === 'probe'" :target-name="targetName()" :write-label="writeLabel" :count="checkedIds.length"
-        :write-disabled="busy || !canWrite" :write-reason="writeReason"
-        :remove-disabled="busy || !canRemove" :remove-reason="removeReason" :preview="previewNames"
-        @write="writeConfirm = true" @remove="removeConfirm = true" />
-    </div>
-
-    <ConfirmModal :show="writeConfirm" title="确认写入配置" ok-text="确认写入" @close="writeConfirm = false" @ok="doWrite">
-      <section class="confirm-sec">
-        <h4>写入内容</h4>
-        <dl class="confirm-grid">
-          <dt>写入目标</dt><dd>{{ targetName() }}</dd>
-          <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
-          <dt>将写入模型</dt><dd>{{ checkedIds.length }} 个（当前已选的可用模型）</dd>
-          <dt>写入方式</dt><dd>带 owner 标记的覆盖式同步，只替换本插件写入的条目</dd>
-        </dl>
-        <p class="confirm-note">{{ checkedIds.length
-          ? '确认后会把 ' + checkedIds.length + ' 个可用模型写入 ' + targetName() + '，完成后会有浮层提示。'
-          : '当前没有勾选任何可用模型，写入将清空本插件在 ' + targetName() + ' 的条目，不会动其它工具的配置。' }}</p>
-      </section>
-    </ConfirmModal>
-
-    <ConfirmModal :show="removeConfirm" title="确认移除配置" ok-text="确认移除" danger @close="removeConfirm = false" @ok="doRemove">
-      <section class="confirm-sec">
-        <h4>移除内容</h4>
-        <dl class="confirm-grid">
-          <dt>写入目标</dt><dd>{{ targetName() }}</dd>
-          <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
-          <dt>将移除条目</dt><dd>{{ owned }} 个 · 仅 OpenCode 接入写入的条目（AtomCode、日日新与你自己写的配置原样保留）</dd>
-          <dt>本机数据</dt><dd>API Key 与勾选记录不受影响，可随时重新写入</dd>
-        </dl>
-        <p class="confirm-note">移除后，{{ targetName() }} 里由 OpenCode 接入写入的模型将不可用。</p>
-      </section>
-    </ConfirmModal>
-
-    <EnvModal :show="envShow" :state="st" @close="envShow = false" />
-    <DetailModal :show="!!detailModel" :model="detailModel" :model-results="modelResults"
-      :available-models="availableModels" :probe="probe" :activity="activity" @close="detailModel = null" />
-  </div>
-</template>
 
 <style scoped>
 .check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }

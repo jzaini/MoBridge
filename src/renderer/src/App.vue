@@ -1,3 +1,86 @@
+<template>
+  <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="overrides" class="app-root">
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="app-brand" title="墨桥 MoBridge · 墨坊家族">
+          <svg class="brand-mark" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+            <!-- 墨桥：水墨双拱桥 + 桥下数据流 -->
+            <path d="M3 20 Q10 8 16 13 Q22 8 29 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+            <path d="M6 24 h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".85" />
+            <circle cx="11" cy="27.5" r="1.6" fill="currentColor" opacity=".7" />
+            <circle cx="16" cy="27.5" r="1.6" fill="currentColor" opacity=".5" />
+            <circle cx="21" cy="27.5" r="1.6" fill="currentColor" opacity=".7" />
+          </svg>
+          <span class="brand-name">墨桥</span>
+          <span class="brand-en">MoBridge</span>
+        </div>
+        <nav class="app-tabs" role="tablist" aria-label="接入视图">
+          <button v-for="v in views" :key="v.key" type="button" role="tab"
+            class="app-tab" :class="{ active: active === v.key }" :aria-pressed="active === v.key"
+            @click="active = v.key">{{ v.label }}</button>
+        </nav>
+        <div class="header-right">
+          <dl class="status-cluster" aria-label="当前状态">
+            <div class="sc-item">
+              <dt>服务</dt>
+              <dd :class="phaseInfo.kind">
+                <!-- 状态即操作：显示什么状态，这里就能做什么。
+                     运行中点「停止」（弹确认）；已停止点「启动」；其余状态只读。 -->
+                <button v-if="phaseInfo.kind !== 'error'" class="svc-toggle" type="button"
+                  :disabled="serviceStarting || (phaseInfo.kind as string) === 'warn'"
+                  :title="serviceStopped ? '启动本地服务：重新监听端口并检测模型' : '停止本地服务：转发口不再响应，配置保留'"
+                  @click="serviceStopped ? doServiceStart() : (stopConfirm = true)">
+                  <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
+                  <span class="svc-action">{{ svcAction }}</span>
+                </button>
+                <template v-else>
+                  <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
+                </template>
+              </dd>
+            </div>
+            <div class="sc-item">
+              <dt>目标</dt>
+              <dd>{{ targetInfo }}</dd>
+            </div>
+            <div class="sc-item">
+              <dt>已写入</dt>
+              <dd :class="ownedCount ? 'ok' : 'na'">{{ ownedCount ? ownedCount + ' 条' : '无' }}</dd>
+            </div>
+          </dl>
+          <NotificationCenter />
+          <button class="settings-btn" type="button" title="打开设置" @click="settingsOpen = true">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none"
+              stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M4 7h16M4 17h16" />
+              <circle cx="9.5" cy="7" r="2.3" fill="var(--surface)" />
+              <circle cx="15" cy="17" r="2.3" fill="var(--surface)" />
+            </svg>
+            <span>设置</span>
+          </button>
+          <div class="theme-control" role="group" aria-label="界面主题">
+            <button v-for="t in themeOptions" :key="t.key" type="button"
+              class="theme-btn" :class="{ active: choice === t.key }" :aria-pressed="choice === t.key"
+              :title="t.key === 'system' ? '跟随系统设置' : t.key === 'light' ? '始终使用浅色界面' : '始终使用深色界面'"
+              @click="set(t.key)">{{ t.label }}</button>
+          </div>
+        </div>
+      </header>
+      <main class="app-body">
+        <div class="app-ambient" aria-hidden="true" />
+        <component :is="activeComp" />
+      </main>
+      <SettingsModal :show="settingsOpen" @close="settingsOpen = false" />
+      <ConfirmModal :show="stopConfirm" title="确认停止本地服务" ok-text="停止服务" danger
+        @close="stopConfirm = false" @ok="doServiceStop">
+        <p class="stop-note">停止后：<b>127.0.0.1 的转发口不再响应</b>，已写入 WorkBuddy / DSH / 墨坊 的模型会连接失败，直到重新启动服务。</p>
+        <p class="stop-note">配置<b>不会</b>被移除——客户端里的条目原样保留，重新启动即恢复。确实想清掉条目，请用各接入页的「移除配置」。</p>
+      </ConfirmModal>
+      <OpProgress />
+      <ToastHost />
+    </div>
+  </NConfigProvider>
+</template>
+
 <script setup lang="ts">
 import { ref, computed, watch, type Component } from 'vue'
 import { NConfigProvider, NButton, darkTheme, type GlobalThemeOverrides } from 'naive-ui'
@@ -129,89 +212,6 @@ async function doServiceStart() {
   note('本地服务正在启动，就绪后会自动检测模型。', 'ok')
 }
 </script>
-
-<template>
-  <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="overrides" class="app-root">
-    <div class="app-shell">
-      <header class="app-header">
-        <div class="app-brand" title="墨桥 MoBridge · 墨坊家族">
-          <svg class="brand-mark" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
-            <!-- 墨桥：水墨双拱桥 + 桥下数据流 -->
-            <path d="M3 20 Q10 8 16 13 Q22 8 29 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
-            <path d="M6 24 h20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".85" />
-            <circle cx="11" cy="27.5" r="1.6" fill="currentColor" opacity=".7" />
-            <circle cx="16" cy="27.5" r="1.6" fill="currentColor" opacity=".5" />
-            <circle cx="21" cy="27.5" r="1.6" fill="currentColor" opacity=".7" />
-          </svg>
-          <span class="brand-name">墨桥</span>
-          <span class="brand-en">MoBridge</span>
-        </div>
-        <nav class="app-tabs" role="tablist" aria-label="接入视图">
-          <button v-for="v in views" :key="v.key" type="button" role="tab"
-            class="app-tab" :class="{ active: active === v.key }" :aria-pressed="active === v.key"
-            @click="active = v.key">{{ v.label }}</button>
-        </nav>
-        <div class="header-right">
-          <dl class="status-cluster" aria-label="当前状态">
-            <div class="sc-item">
-              <dt>服务</dt>
-              <dd :class="phaseInfo.kind">
-                <!-- 状态即操作：显示什么状态，这里就能做什么。
-                     运行中点「停止」（弹确认）；已停止点「启动」；其余状态只读。 -->
-                <button v-if="phaseInfo.kind !== 'error'" class="svc-toggle" type="button"
-                  :disabled="serviceStarting || (phaseInfo.kind as string) === 'warn'"
-                  :title="serviceStopped ? '启动本地服务：重新监听端口并检测模型' : '停止本地服务：转发口不再响应，配置保留'"
-                  @click="serviceStopped ? doServiceStart() : (stopConfirm = true)">
-                  <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
-                  <span class="svc-action">{{ svcAction }}</span>
-                </button>
-                <template v-else>
-                  <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
-                </template>
-              </dd>
-            </div>
-            <div class="sc-item">
-              <dt>目标</dt>
-              <dd>{{ targetInfo }}</dd>
-            </div>
-            <div class="sc-item">
-              <dt>已写入</dt>
-              <dd :class="ownedCount ? 'ok' : 'na'">{{ ownedCount ? ownedCount + ' 条' : '无' }}</dd>
-            </div>
-          </dl>
-          <NotificationCenter />
-          <button class="settings-btn" type="button" title="打开设置" @click="settingsOpen = true">
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none"
-              stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <path d="M4 7h16M4 17h16" />
-              <circle cx="9.5" cy="7" r="2.3" fill="var(--surface)" />
-              <circle cx="15" cy="17" r="2.3" fill="var(--surface)" />
-            </svg>
-            <span>设置</span>
-          </button>
-          <div class="theme-control" role="group" aria-label="界面主题">
-            <button v-for="t in themeOptions" :key="t.key" type="button"
-              class="theme-btn" :class="{ active: choice === t.key }" :aria-pressed="choice === t.key"
-              :title="t.key === 'system' ? '跟随系统设置' : t.key === 'light' ? '始终使用浅色界面' : '始终使用深色界面'"
-              @click="set(t.key)">{{ t.label }}</button>
-          </div>
-        </div>
-      </header>
-      <main class="app-body">
-        <div class="app-ambient" aria-hidden="true" />
-        <component :is="activeComp" />
-      </main>
-      <SettingsModal :show="settingsOpen" @close="settingsOpen = false" />
-      <ConfirmModal :show="stopConfirm" title="确认停止本地服务" ok-text="停止服务" danger
-        @close="stopConfirm = false" @ok="doServiceStop">
-        <p class="stop-note">停止后：<b>127.0.0.1 的转发口不再响应</b>，已写入 WorkBuddy / DSH / 墨坊 的模型会连接失败，直到重新启动服务。</p>
-        <p class="stop-note">配置<b>不会</b>被移除——客户端里的条目原样保留，重新启动即恢复。确实想清掉条目，请用各接入页的「移除配置」。</p>
-      </ConfirmModal>
-      <OpProgress />
-      <ToastHost />
-    </div>
-  </NConfigProvider>
-</template>
 
 <style scoped>
 .app-root { height: 100%; }
