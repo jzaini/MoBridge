@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createServer } from '../src/service/core/server.ts';
+import { createServer } from '../../src/service/core/server.ts';
 
 const KEY = 'test-key-123';
 const MODELS = [{ id: 'opencode/big-pickle', name: 'Big Pickle', images: true, reasoning: true, variants: {}, toolcall: true }];

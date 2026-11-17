@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { renderPatch, dshProvider, dshModelEntry, syncDshProvider, listDshProfiles, PROVIDER_ID } from '../src/service/config/dsh-config.ts';
+import { renderPatch, dshProvider, dshModelEntry, syncDshProvider, listDshProfiles, PROVIDER_ID } from '../../src/service/config/dsh-config.ts';
 
 const PATCH = `# 用户自己的注释保留
 - id: ui-settings

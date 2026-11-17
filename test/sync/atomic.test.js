@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replaceWithRetry } from '../src/service/sync/atomic.ts';
+import { replaceWithRetry } from '../../src/service/sync/atomic.ts';
 
 test('瞬时共享冲突会重试，之后成功', async () => {
   let calls = 0;

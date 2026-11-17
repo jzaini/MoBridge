@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSystemProxy, parseWindowsProxy } from '../src/service/config/system-proxy.ts';
+import { parseSystemProxy, parseWindowsProxy } from '../../src/service/config/system-proxy.ts';
 
 const SCUTIL = `
 <dictionary> {

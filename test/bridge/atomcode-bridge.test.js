@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { startAtomcodeBridge } from '../src/service/core/atomcode-bridge.ts';
+import { startAtomcodeBridge } from '../../src/service/core/atomcode-bridge.ts';
 
 // 转发口的职责只有一条：把客户端发来的名字认出来，换成上游真名再带着签名头送出去。
 // 这里锁的是两个曾经踩过的点——认不出模型时静默改投第一个模型、以及客户端发回来的是

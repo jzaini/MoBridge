@@ -14,7 +14,7 @@
     "build:win": "npm run build:pack",
     "build:pack": "npm run build && node scripts/build-win.mjs",
     "build:win:portable": "npm run build && electron-builder --win portable --x64 --publish never",
-    "test": "node --experimental-strip-types --test \"test/*.test.js\"",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.js\"",
     "icons": "node scripts/rasterize-icons.mjs",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json --composite false && tsc --noEmit -p tsconfig.node.json --composite false"
   },

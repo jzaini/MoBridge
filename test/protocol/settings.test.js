@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeSettings, pickKnownKeys, SETTINGS_DEFAULTS, SETTINGS_LIMITS } from '../src/service/domain/settings.ts';
+import { normalizeSettings, pickKnownKeys, SETTINGS_DEFAULTS, SETTINGS_LIMITS } from '../../src/service/domain/settings.ts';
 
 // 设置是从磁盘/面板读进来的不可信数据：缺字段、多字段、写成字符串、写进 null 都遇到过。
 // 这里的用例就是保证"无论读到什么，服务拿到的都是一份能用的完整设置"。

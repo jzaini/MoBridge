@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { prepare, decode, completion, sendSSE, BridgeError } from '../src/service/domain/protocol.ts';
+import { prepare, decode, completion, sendSSE, BridgeError } from '../../src/service/domain/protocol.ts';
 
 const model = (extra = {}) => ({ id: 'opencode/big-pickle', name: 'Big Pickle', images: false, toolcall: true, reasoning: true, variants: {}, ...extra });
 const readTool = { type: 'function', function: { name: 'Read', description: 'read a file', parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } } };

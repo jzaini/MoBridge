@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dataDirectory, runtimePackage } from '../src/service/core/platform.ts';
+import { dataDirectory, runtimePackage } from '../../src/service/core/platform.ts';
 
 test('三种系统的数据目录各自落位', () => {
   assert.equal(dataDirectory('darwin', {}, '/Users/me'), '/Users/me/Library/Application Support/MoBridge');

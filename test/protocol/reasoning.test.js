@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reasoningEfforts, workBuddyReasoning } from '../src/service/domain/reasoning.ts';
+import { reasoningEfforts, workBuddyReasoning } from '../../src/service/domain/reasoning.ts';
 
 const model = (variants, reasoning = true) => ({ reasoning, variants });
 

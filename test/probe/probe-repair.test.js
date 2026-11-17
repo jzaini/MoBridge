@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { probeBody, judgeProbe, probeModel, probeFailure, formatUnsupported, PROBE_TIMEOUT, PROBE_TOOLS, RETRYABLE_PROBE } from '../src/service/domain/probe.ts';
-import { extractJson, clientConventions, repairBody, resendPrompt, repair } from '../src/service/domain/repair.ts';
+import { probeBody, judgeProbe, probeModel, probeFailure, formatUnsupported, PROBE_TIMEOUT, PROBE_TOOLS, RETRYABLE_PROBE } from '../../src/service/domain/probe.ts';
+import { extractJson, clientConventions, repairBody, resendPrompt, repair } from '../../src/service/domain/repair.ts';
 
 const MODEL = { id: 'opencode/big-pickle', name: 'Big Pickle' };
 const response = calls => ({ choices: [{ message: { role: 'assistant', content: null, ...(calls ? { tool_calls: calls } : {}) } }] });

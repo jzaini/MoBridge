@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAllowedExternal, EXTERNAL_HOSTS } from '../src/shared/constants.ts';
+import { isAllowedExternal, EXTERNAL_HOSTS } from '../../src/shared/constants.ts';
 
 // 外链白名单回归：页面上每个「官网 ↗」按钮指向的 URL 必须真的能出白名单，
 // 否则点击后 { ok: false } 静默不动——用户会以为按钮坏了。

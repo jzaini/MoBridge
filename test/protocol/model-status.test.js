@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { modelResult, withRequestMeta, clientModelID, usableModelIds } from '../src/service/domain/model-status.ts';
+import { modelResult, withRequestMeta, clientModelID, usableModelIds } from '../../src/service/domain/model-status.ts';
 
 const model = id => ({ id, name: id.replace('opencode/', '') });
 

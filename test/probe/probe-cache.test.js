@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createProbeCache, fingerprint, DEFAULT_OK_TTL_MINUTES, DEFAULT_TRANSIENT_TTL_MINUTES } from '../src/service/domain/probe-cache.ts';
+import { createProbeCache, fingerprint, DEFAULT_OK_TTL_MINUTES, DEFAULT_TRANSIENT_TTL_MINUTES } from '../../src/service/domain/probe-cache.ts';
 
 const model = (extra = {}) => ({ id: 'opencode/big-pickle', name: 'Big Pickle', toolcall: true, reasoning: true, images: false, context: 200000, output: 32000, ...extra });
 const scratch = async () => {

@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { pickPathPatch, validateTargetPath, locateWorkbuddyFile } from '../src/service/config/target-paths.ts';
-import { locateDshHome } from '../src/service/config/dsh-config.ts';
-import { mofangCandidates, resolveMofangConfig } from '../src/service/config/mofang-config.ts';
+import { pickPathPatch, validateTargetPath, locateWorkbuddyFile } from '../../src/service/config/target-paths.ts';
+import { locateDshHome } from '../../src/service/config/dsh-config.ts';
+import { mofangCandidates, resolveMofangConfig } from '../../src/service/config/mofang-config.ts';
 import {
   TARGET_PATH_KEY, TARGET_PATH_KIND, PATH_TARGET, TARGET_PATH_KEYS,
-} from '../src/shared/target-path-keys.ts';
+} from '../../src/shared/target-path-keys.ts';
 
 // 用户把客户端数据目录搬走后，墨桥还按固定目录找配置 → 模型写进一份客户端不读的文件。
 // 这组用例锁住「设置里指定的路径」如何被挑出、校验、并优先于环境变量/默认目录。

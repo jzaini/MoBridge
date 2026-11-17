@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { mergeModels, syncModels, atomicWrite, OWNER, OWNER_FIELD, isOwnedEntry } from '../src/service/sync/sync.ts';
-import { validateModelsFile, resolveModelsFile } from '../src/service/config/workbuddy-config.ts';
+import { mergeModels, syncModels, atomicWrite, OWNER, OWNER_FIELD, isOwnedEntry } from '../../src/service/sync/sync.ts';
+import { validateModelsFile, resolveModelsFile } from '../../src/service/config/workbuddy-config.ts';
 
 const clientModel = (name, extra = {}) => ({ id: `opencode/${name}`, name, images: false, toolcall: true, reasoning: true, variants: {}, ...extra });
 const ENDPOINT = 'http://127.0.0.1:41980/v1/chat/completions';

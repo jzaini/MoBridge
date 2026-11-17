@@ -5,8 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { c as createTar } from 'tar';
-import { findRuntime, runtimeCandidates, startBackend } from '../src/service/core/runtime.ts';
-import { runtimePackage } from '../src/service/core/platform.ts';
+import { findRuntime, runtimeCandidates, startBackend } from '../../src/service/core/runtime.ts';
+import { runtimePackage } from '../../src/service/core/platform.ts';
 
 // 包名与二进制名按当前平台取：Windows 上是 opencode-windows-x64 / opencode.exe，
 // 写死成 darwin 那一对会让整条 Windows 路径压根没被测到。

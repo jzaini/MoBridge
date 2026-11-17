@@ -4,8 +4,8 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { listenService } from '../src/service/core/service-instance.ts';
-import { finderAgent, validateFoundConfig, windowsSearchRoots, searchConfig } from '../src/service/config/config-finder.ts';
+import { listenService } from '../../src/service/core/service-instance.ts';
+import { finderAgent, validateFoundConfig, windowsSearchRoots, searchConfig } from '../../src/service/config/config-finder.ts';
 
 test('端口被占用时给出可读的提示，占用期间返回 503', async () => {
   const first = await listenService(0);

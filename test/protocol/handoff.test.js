@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHandoff, handoffInput, validateAction, rejectFeedback } from '../src/service/domain/handoff.ts';
-import { freeModels, shrinkPermission } from '../src/service/domain/backend.ts';
+import { buildHandoff, handoffInput, validateAction, rejectFeedback } from '../../src/service/domain/handoff.ts';
+import { freeModels, shrinkPermission } from '../../src/service/domain/backend.ts';
 
 const tool = (name, properties, required = []) => ({ type: 'function', function: { name, description: `${name} tool`, parameters: { type: 'object', properties, required } } });
 const TOOLS = [
