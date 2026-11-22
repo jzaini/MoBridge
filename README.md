@@ -22,6 +22,8 @@
 | 墨坊 jzWorkBuddy | `~/.mofang/config.json` 的 `providers[]`（旧的 `~/.ai-coding-tool` 自动沿用） | `mobridgeOwner: mobridge-*-v1` |
 | WorkBuddy | `models.json` 清单 | `mobridgeOwner: mobridge-v1`（兼容旧的 `buddyBridgeOwner`） |
 | DSH | 各 profile 的 `cordis.patch.yml` 里的 provider | provider id（`mobridge` / `mobridge-atomcode` …） |
+| Qoder | `~/.qoder-cn/settings.json`（国际版 `~/.qoder/`）的 BYOK `providers` | `mobridgeOwner: mobridge-*-v1` + 键前缀 `qoder-custom-mobridge-` |
+| Trae | `%APPDATA%/Trae CN/User/globalStorage/state.vscdb` 的模型清单键（SQLite，写入前需退出 Trae） | `mobridgeOwner: mobridge-*-v1`；已知限制：Trae 原生保存 Key 时加密，墨桥按用户拍板写明文（见手册 §14） |
 
 同一份配置里三路来源各占各的 owner（`mobridge-v1` / `mobridge-atomcode-v1` / `mobridge-sensenova-v1`），
 任何一个来源的「写入」只覆盖自己的条目、「移除」只摘自己的条目；墨坊的 `activeProvider` 不会被改动。
