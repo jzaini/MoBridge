@@ -51,14 +51,19 @@ function isOwned(entry, owner = OWNER) {
   return !!entry && typeof entry === 'object' && entry[OWNER_FIELD] === owner;
 }
 
-// 单个模型条目：字段形状照抄墨坊自己写出来的条目（id / name / isVision），
-// 不塞它没见过的键——多写的字段在它的 schema 里没有意义，只会变成噪音。
+// 单个模型条目：基础字段照抄墨坊自己写出来的条目（id / name / isVision）。
+// contextWindow / reasoningEfforts 是墨坊 v2 起认识的扩展字段：目录里有就带上，
+// 墨坊设置页展示"上下文窗口 / 思考强度"，调用时把选中的档位映射成 reasoning_effort。
+// 旧版墨坊不认识这两个键只会忽略，写入永远向后兼容。
 export function mofangModelEntry(model, { idOf = m => m.id, labelOf = m => m.name || m.id } = {}) {
-  return {
+  const entry = {
     id: idOf(model),
     name: labelOf(model),
     isVision: model.images === true,
   };
+  if (Number(model.context) > 0) entry.contextWindow = Number(model.context);
+  if (Array.isArray(model.levels) && model.levels.length) entry.reasoningEfforts = model.levels.slice();
+  return entry;
 }
 
 export function mofangProvider(models, endpoint, key, { providerId = PROVIDER_ID, owner = OWNER, name = PROVIDER_NAME, idOf, labelOf } = {}) {

@@ -97,10 +97,27 @@ export async function validateTargetPath(target: TargetKey, value: string): Prom
   }
   if (target === 'workbuddy') { await validateModelsFile(file); return; }
   // 墨坊 config.json：必须已存在、可解析、且带 providers 数组。
-  const text = await fs.readFile(file, 'utf8').catch(() => { throw new Error(`墨坊配置文件读不到：${file}`); });
-  let doc: unknown;
-  try { doc = JSON.parse(String(text).replace(/^\uFEFF/, '')); }
-  catch { throw new Error(`墨坊配置文件不是合法 JSON：${file}`); }
-  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(`墨坊配置文件格式不对（应为对象）：${file}`);
-  if (!Array.isArray((doc as { providers?: unknown }).providers)) throw new Error(`墨坊配置文件里没有 providers 数组：${file}`);
+  if (target === 'mofang') {
+    const text = await fs.readFile(file, 'utf8').catch(() => { throw new Error(`墨坊配置文件读不到：${file}`); });
+    let doc: unknown;
+    try { doc = JSON.parse(String(text).replace(/^\uFEFF/, '')); }
+    catch { throw new Error(`墨坊配置文件不是合法 JSON：${file}`); }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(`墨坊配置文件格式不对（应为对象）：${file}`);
+    if (!Array.isArray((doc as { providers?: unknown }).providers)) throw new Error(`墨坊配置文件里没有 providers 数组：${file}`);
+    return;
+  }
+  // Qoder settings.json：必须已存在且可解析为对象。
+  if (target === 'qoder') {
+    const text = await fs.readFile(file, 'utf8').catch(() => { throw new Error(`Qoder settings.json 读不到：${file}`); });
+    let doc: unknown;
+    try { doc = JSON.parse(String(text).replace(/^\uFEFF/, '')); }
+    catch { throw new Error(`Qoder settings.json 不是合法 JSON：${file}`); }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error(`Qoder settings.json 格式不对（应为对象）：${file}`);
+    return;
+  }
+  // Trae state.vscdb：必须是 SQLite 数据库（16 字节文件头固定为 "SQLite format 3\0"）。
+  const header = Buffer.alloc(16);
+  const handle = await fs.open(file, 'r').catch(() => { throw new Error(`Trae 数据库读不到：${file}`); });
+  try { await handle.read(header, 0, 16, 0); } finally { await handle.close(); }
+  if (header.toString('utf8', 0, 15) !== 'SQLite format 3') throw new Error(`不是 SQLite 数据库文件：${file}`);
 }

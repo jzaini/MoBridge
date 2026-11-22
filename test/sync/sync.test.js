@@ -28,6 +28,17 @@ test('合并保留用户条目、改写自有条目、并跳过 id 冲突', () =
   assert.equal(owned.vendor, 'Custom');
 });
 
+test('labelOf：id 用上游真名（客户端原样发回上游），name 用展示名', () => {
+  // 2026-11-18 事故：日日新把展示名写进了 id，客户端又没有转发口剥前缀，上游直接 404。
+  const model = { id: 'SN · sensenova-6.8-flash', upstream: 'sensenova-6.8-flash', name: 'SenseNova 6.8 Flash', images: true };
+  const merged = mergeModels([], [model], 'https://token.sensenova.cn/v1/chat/completions', 'sk-x', {
+    owner: 'mobridge-sensenova-v1', clientId: m => m.upstream, labelOf: m => m.id,
+  });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, 'sensenova-6.8-flash', 'id 必须是上游认识的真名');
+  assert.equal(merged[0].name, 'SN · sensenova-6.8-flash', 'name 保留展示名方便辨认');
+});
+
 test('对象形态的配置连带维护 availableModels，自有旧 id 被摘掉', () => {
   const document = { version: 2, models: [{ id: 'OC · Gone Free', [OWNER_FIELD]: OWNER }], availableModels: ['OC · Gone Free', 'user-model'] };
   const merged = mergeModels(document, [clientModel('New Free')], ENDPOINT, 'key-1');

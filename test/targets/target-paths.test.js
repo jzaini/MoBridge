@@ -13,15 +13,17 @@ import {
 // 用户把客户端数据目录搬走后，墨桥还按固定目录找配置 → 模型写进一份客户端不读的文件。
 // 这组用例锁住「设置里指定的路径」如何被挑出、校验、并优先于环境变量/默认目录。
 
-test('键名映射：三个目标各有一个覆写键，方向可逆', () => {
-  assert.deepEqual(TARGET_PATH_KEYS, ['workBuddyModelsFile', 'dshHome', 'mofangConfigFile']);
+test('键名映射：五个目标各有一个覆写键，方向可逆', () => {
+  assert.deepEqual(TARGET_PATH_KEYS, ['workBuddyModelsFile', 'dshHome', 'mofangConfigFile', 'qoderConfigFile', 'traeStateFile']);
   for (const key of TARGET_PATH_KEYS) assert.equal(TARGET_PATH_KEY[PATH_TARGET[key]], key);
   assert.equal(TARGET_PATH_KIND.dsh, 'directory');
   assert.equal(TARGET_PATH_KIND.workbuddy, 'file');
   assert.equal(TARGET_PATH_KIND.mofang, 'file');
+  assert.equal(TARGET_PATH_KIND.qoder, 'file');
+  assert.equal(TARGET_PATH_KIND.trae, 'file');
 });
 
-test('pickPathPatch：只收三个键、trim、空值 = 恢复默认', () => {
+test('pickPathPatch：只收五个键、trim、空值 = 恢复默认', () => {
   assert.deepEqual(pickPathPatch({ workBuddyModelsFile: '  /tmp/wb/models.json  ' }),
     { workBuddyModelsFile: '/tmp/wb/models.json' });
   assert.deepEqual(pickPathPatch({ dshHome: '', mofangConfigFile: null, port: 9999 }),

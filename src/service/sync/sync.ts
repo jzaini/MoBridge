@@ -42,14 +42,15 @@ export async function atomicWrite(file, text) {
 // 合并规则：先摘掉自己上次放进去的，再把这次的清单放进去。
 // id 冲突时让位给用户自己的条目——同名模型宁可少导一个，也不能覆盖别人的配置；
 // 客户端可见 id（`OC · xxx`）也参与查重，否则会在 WorkBuddy 里出现两个同名模型。
-export function mergeModels(document, models, endpoint, key, { allowEmpty = false, owner = OWNER, clientId = clientModelID } = {}) {
+// id 是客户端发回上游的模型名，必须是上游认识的真名；name 只是展示，可用 labelOf 给个更好认的。
+export function mergeModels(document, models, endpoint, key, { allowEmpty = false, owner = OWNER, clientId = clientModelID, labelOf = null } = {}) {
   if (!models.length && !allowEmpty) throw new Error('Empty model discovery; existing configuration preserved');
   const list = Array.isArray(document) ? document : document?.models;
   if (!Array.isArray(list)) throw new Error('Unrecognized WorkBuddy models.json; left unchanged');
   const kept = list.filter(m => !isOwnedEntry(m, owner));
   const conflicts = new Set(kept.map(m => m.id));
   const entries = models.filter(m => !conflicts.has(m.id) && !conflicts.has(clientId(m))).map(m => ({
-    id: clientId(m), name: clientId(m), vendor: 'Custom', url: endpoint, apiKey: key,
+    id: clientId(m), name: labelOf ? labelOf(m) : clientId(m), vendor: 'Custom', url: endpoint, apiKey: key,
     supportsToolCall: !m.chatOnly, supportsImages: m.images === true, ...workBuddyReasoning(m),
     [OWNER_FIELD]: owner,
     ...((m.input ?? m.context) ? { maxInputTokens: m.input ?? m.context } : {}),
