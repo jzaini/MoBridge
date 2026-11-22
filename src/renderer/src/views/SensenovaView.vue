@@ -7,9 +7,9 @@
 // 验证被放进第 1 步且保存后自动跑：Key 存下去的那一刻就该知道它对不对，
 // 让用户再点一次「验证」、甚至跑到第 2 步才发现鉴权失败，是上一版最别扭的地方。
 import { ref, computed, onMounted, watch } from 'vue'
-import { NButton, NCheckbox, NInput, NModal } from 'naive-ui'
+import { NButton, NInput, NModal } from 'naive-ui'
 import {
-  useService, note, run, callAction, pushBusy, operationBusy, controlsBusy, inspectTargets,
+  useService, note as baseNote, run, callAction, pushBusy, operationBusy, controlsBusy, inspectTargets,
 } from '../composables/useService'
 import StepRail from '../components/StepRail.vue'
 import type { RailStep } from '../utils/steps'
@@ -24,6 +24,15 @@ import { notifyFailure } from '../utils/errors'
 
 type SnModel = { id: string, upstream: string, name: string, kind: string, context: number | null, images: boolean, caps: string[], note: string, chatProbe?: boolean }
 type SnResult = { model: string, ok: boolean, latencyMs: number | null, status: number | null, error: string | null, code: string | null, time: string }
+
+// 本页产生的通知统一标日日新来源：通知中心里跟 AtomCode 的消息一眼分开
+// （之前两边通知挤在同一列，"鉴权通过"容易被误读成 AtomCode 登录成功）。
+function snNote(text: string, kind: '' | 'ok' | 'error' = '', opts: { stream?: string, detail?: string } = {}) {
+  baseNote(text, kind, { ...opts, source: '日日新' })
+}
+function snFailure(raw: unknown, opts: { fallback?: string, prefix?: string } = {}) {
+  notifyFailure(raw, { ...opts, source: '日日新' })
+}
 
 const { state } = useService()
 const sn = computed(() => (state.value.sensenova || {}) as Record<string, any>)
@@ -96,27 +105,27 @@ const rail = computed<RailStep[]>(() => [
     key: 'select',
     label: '检测并挑选模型',
     hint: availableCount.value ? availableCount.value + ' / ' + chatModels.value.length + ' 个可用' : '逐个发真实请求量可用性',
-    state: availableCount.value ? 'done' : keyPresent.value ? 'current' : 'todo',
+    state: availableCount.value ? 'done' : (keyPresent.value && validated.value) ? 'current' : 'todo',
   },
 ])
 const active = ref<string>(currentStep.value)
 watch(currentStep, (next, prev) => { if (active.value === prev) active.value = next })
 
-async function switchTarget(value: 'workbuddy' | 'dsh' | 'mofang') {
+async function switchTarget(value: 'workbuddy' | 'dsh' | 'mofang' | 'qoder' | 'trae') {
   if (value === state.value.target) return
   pushBusy('target')
   try {
     const envelope = await run('target', value)
     if (!envelope.ok) throw new Error(envelope.error || '切换失败')
-    note(`已切换到 ${targetLabel(value)}。`, 'ok')
+    snNote(`已切换到 ${targetLabel(value)}。`, 'ok')
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
 }
 async function recheck() {
   const envelope = await inspectTargets()
-  if (envelope.ok) note(`已重新体检 ${targetName.value} 里的墨桥条目。`, 'ok')
-  else notifyFailure(envelope.error, { fallback: '体检失败', prefix: '体检失败：' })
+  if (envelope.ok) snNote(`已重新体检 ${targetName.value} 里的墨桥条目。`, 'ok')
+  else snFailure(envelope.error, { fallback: '体检失败', prefix: '体检失败：' })
 }
 
 // ── 勾选 ───────────────────────────────────────────────────────────────
@@ -129,19 +138,98 @@ async function toggle(model: SnModel, next: boolean) {
   const ids = new Set(selection.value)
   if (next) ids.add(model.upstream); else ids.delete(model.upstream)
   const envelope = await callAction('sn-selection', Array.from(ids), 20000, { keepNote: true })
-  if (!envelope.ok) notifyFailure(envelope.error, { fallback: '勾选更新失败' })
+  if (!envelope.ok) snFailure(envelope.error, { fallback: '勾选更新失败' })
 }
-async function bulk(mode: 'available' | 'none') {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
-  const ids = mode === 'available' ? checkable.value : []
+// 只看可用开关：过滤表格行（勾选记录不受影响，关掉开关全部回来）。
+const showUsable = ref(false)
+const tableModels = computed(() => (showUsable.value ? chatModels.value.filter(model => probeResults.value[model.upstream]?.ok === true) : chatModels.value))
+// 「只勾选识图」的候选：可用且 images=true（对话可发图）的模型。
+const snImageUsable = computed(() => checkable.value.filter(id => chatModels.value.find(m => m.upstream === id)?.images === true))
+async function bulk(mode: 'available' | 'image' | 'none') {
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  const ids = mode === 'available' ? checkable.value : mode === 'image' ? snImageUsable.value : []
   pushBusy('sn-selection')
   try {
     const envelope = await callAction('sn-selection', ids, 20000)
     if (!envelope.ok) throw new Error(envelope.error || '勾选更新失败')
-    note(mode === 'available' ? `已勾选 ${ids.length} 个可用模型。` : '已取消全部勾选。', 'ok')
+    snNote(mode === 'available' ? `已勾选 ${ids.length} 个可用模型。` : mode === 'image' ? `已勾选 ${ids.length} 个支持识图的可用模型。` : '已取消全部勾选。', 'ok')
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
+}
+
+// 全选 checkbox 的口径与另两页一致：当前可见的模型。勾=并入 selection，取消=从 selection 移除；
+// 只动可见的，未显示的勾选记录不动。
+const snCheckableVisible = computed(() => tableModels.value.map(m => m.upstream))
+const snCheckedVisible = computed(() => snCheckableVisible.value.filter(id => selection.value.includes(id)).length)
+const snAllChecked = computed(() => snCheckableVisible.value.length > 0 && snCheckedVisible.value === snCheckableVisible.value.length)
+const snAllIndeterminate = computed(() => snCheckedVisible.value > 0 && snCheckedVisible.value < snCheckableVisible.value.length)
+async function onSnCheckAll(next: boolean) {
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  const ids = new Set(selection.value)
+  if (next) snCheckableVisible.value.forEach(id => ids.add(id))
+  else snCheckableVisible.value.forEach(id => ids.delete(id))
+  const envelope = await callAction('sn-selection', Array.from(ids), 20000, { keepNote: true })
+  if (!envelope.ok) snFailure(envelope.error, { fallback: '勾选更新失败' })
+}
+
+// 单模型重测：与「检测选中」同一探测链路，只发这一条的请求（省额度）。
+const retesting = ref<string | null>('')
+async function retest(model: SnModel) {
+  if (opBusy.value) { snNote('有操作正在进行，请稍候。', 'error'); return }
+  retesting.value = model.upstream
+  pushBusy('sn-probe')
+  try {
+    await callAction('sn-probe', [model.upstream], 60000)
+    const r = probeResults.value[model.upstream]
+    snNote(r?.ok
+      ? `${model.id} 重测通过（${r.latencyMs != null ? (r.latencyMs < 1000 ? r.latencyMs + ' ms' : (r.latencyMs / 1000).toFixed(1) + ' 秒') : '耗时未知'}）。`
+      : `${model.id} 重测失败：${r?.error || '原因未知'}`, r?.ok ? 'ok' : 'error')
+  } catch (error) { snFailure(error) } finally { retesting.value = null; pushBusy(null) }
+}
+
+// ── 统一表格适配：把 SnModel 映射成 ModelTable 的通用行模型 ──────────────
+import ModelTable from '../components/ModelTable.vue'
+import TableToolbar from '../components/TableToolbar.vue'
+const snRows = computed(() => tableModels.value.map(m => ({
+  id: m.upstream,
+  name: m.id.replace(/^SN · /, ''),
+  contextText: contextText(m.context),
+  imagesText: imgCell(m).label,
+  caps: m.caps,
+})))
+const snStatusMap = computed(() => {
+  const map: Record<string, { label: string, kind: 'ok' | 'error' | 'checking' | 'na', reason?: string | null }> = {}
+  for (const m of tableModels.value) {
+    const r = probeResults.value[m.upstream]
+    if (retesting.value === m.upstream) { map[m.upstream] = { label: '检测中', kind: 'checking' }; continue }
+    if (m.chatProbe === false) { map[m.upstream] = { label: '不适用', kind: 'na' }; continue }
+    if (r?.ok === true) map[m.upstream] = { label: '可用', kind: 'ok' }
+    else if (r?.ok === false) map[m.upstream] = { label: '不可用', kind: 'error', reason: r.error || '请求失败' }
+    else map[m.upstream] = { label: '未检测', kind: 'na' }
+  }
+  return map
+})
+const snLatency = computed(() => {
+  const map: Record<string, string> = {}
+  for (const m of tableModels.value) {
+    const ms = probeResults.value[m.upstream]?.latencyMs
+    // 与 OpenCode 页同一套格式化（<1s 显示 ms，否则显示秒）——同一屏不能有两种单位。
+    if (ms != null) map[m.upstream] = ms < 1000 ? ms + ' ms' : (ms / 1000).toFixed(1) + ' 秒'
+  }
+  return map
+})
+function onSnSelect(id: string, checked: boolean) {
+  const model = tableModels.value.find(x => x.upstream === id)
+  if (model) void toggle(model, checked)
+}
+function onSnRetest(id: string) {
+  const model = tableModels.value.find(x => x.upstream === id)
+  if (model) void retest(model)
+}
+function onSnDetail(row: { id: string }) {
+  const model = tableModels.value.find(x => x.upstream === row.id)
+  if (model) detail.value = model
 }
 
 // ── Key 与接口地址 ──────────────────────────────────────────────────────
@@ -155,16 +243,16 @@ let autoValidated = false
 // 存完 Key 直接验证：这就是「有 key 之后为什么不能自动鉴权」的答案。
 async function saveKey() {
   const value = keyInput.value.trim()
-  if (!value) { note('请先填入 API Key。', 'error'); return }
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (!value) { snNote('请先填入 API Key。', 'error'); return }
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('sn-save-key')
   try {
     const envelope = await callAction('sn-save-key', value)
     if (!envelope.ok) throw new Error(envelope.error || '保存失败')
     keyInput.value = ''
-    note('Key 已保存到本机（0600），正在自动鉴权…', 'ok', { stream: 'sn-save-key' })
+    snNote('Key 已保存到本机（0600），正在自动鉴权…', 'ok', { stream: 'sn-save-key' })
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
     return
   } finally { pushBusy(null) }
   autoValidated = true
@@ -172,48 +260,48 @@ async function saveKey() {
 }
 async function clearKey() {
   const envelope = await callAction('sn-clear-key')
-  if (envelope.ok) note('已清除本机保存的 API Key。', 'ok')
-  else notifyFailure(envelope.error, { fallback: '清除失败', prefix: '清除失败：' })
+  if (envelope.ok) snNote('已清除本机保存的 API Key。', 'ok')
+  else snFailure(envelope.error, { fallback: '清除失败', prefix: '清除失败：' })
 }
 async function saveBase() {
   const envelope = await callAction('sn-save-base', baseInput.value.trim())
-  if (!envelope.ok) { notifyFailure(envelope.error, { fallback: '保存失败' }); return }
-  note('接口地址已保存；这次改动会让已有验证结果失效。', 'ok')
+  if (!envelope.ok) { snFailure(envelope.error, { fallback: '保存失败' }); return }
+  snNote('接口地址已保存；这次改动会让已有验证结果失效。', 'ok')
 }
 async function resetBase() {
   const envelope = await callAction('sn-reset-base')
-  if (envelope.ok) { baseInput.value = String(sn.value.apiBaseDefault || ''); note('已恢复官方默认接口地址。', 'ok') }
-  else notifyFailure(envelope.error, { fallback: '恢复失败' })
+  if (envelope.ok) { baseInput.value = String(sn.value.apiBaseDefault || ''); snNote('已恢复官方默认接口地址。', 'ok') }
+  else snFailure(envelope.error, { fallback: '恢复失败' })
 }
 
 // ── 验证 / 探测 ─────────────────────────────────────────────────────────
 async function validate() {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
-  if (!keyPresent.value) { note('请先保存 API Key。', 'error'); return }
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (!keyPresent.value) { snNote('请先保存 API Key。', 'error'); return }
   pushBusy('sn-validate')
-  note('正在向日日新发真实请求，确认 Key 与逐模型可用性…', 'ok', { stream: 'sn-validate' })
+  snNote('正在向日日新发真实请求，确认 Key 与逐模型可用性…', 'ok', { stream: 'sn-validate' })
   try {
     const envelope = await run('sn-validate', undefined, 180000)
     if (!envelope.ok) throw new Error(envelope.error || '验证失败')
     const result = (envelope.result || {}) as { ok?: boolean, model?: string, latencyMs?: number, available?: number, error?: string }
-    note(result.ok
+    snNote(result.ok
       ? `鉴权通过（${result.model}，${result.latencyMs ?? '—'} ms）；逐模型检测完成，${result.available ?? 0} 个可用。`
       : `验证失败：${result.error || '未知原因'}`, result.ok ? 'ok' : 'error')
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
 }
 async function probe(ids?: string[]) {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
-  if (ids && !ids.length) { note('没有可检测的已勾选模型。', 'error'); return }
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (ids && !ids.length) { snNote('没有可检测的已勾选模型。', 'error'); return }
   pushBusy('sn-probe')
-  note(ids ? `正在重新检测 ${ids.length} 个模型…` : '正在逐个检测全部对话模型…', 'ok', { stream: 'sn-probe' })
+  snNote(ids ? `正在重新检测 ${ids.length} 个模型…` : '正在逐个检测全部对话模型…', 'ok', { stream: 'sn-probe' })
   try {
     const envelope = await run('sn-probe', ids, 180000)
     if (!envelope.ok) throw new Error(envelope.error || '检测失败')
-    note('检测完成，结果已更新。', 'ok')
+    snNote('检测完成，结果已更新。', 'ok')
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
 }
 function probeSelected() {
@@ -226,35 +314,35 @@ const writeConfirm = ref(false)
 const removeConfirm = ref(false)
 async function doWrite() {
   writeConfirm.value = false
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('sn-import')
-  note(`正在把 ${selection.value.length} 个模型写入 ${targetName.value}…`, 'ok', { stream: 'sn-import' })
+  snNote(`正在把 ${selection.value.length} 个模型写入 ${targetName.value}…`, 'ok', { stream: 'sn-import' })
   try {
     const envelope = await run('sn-import', undefined, 150000)
     if (!envelope.ok) throw new Error(envelope.error || '写入失败')
     const result = (envelope.result || {}) as { changed?: boolean, count?: number }
-    note(result.changed === false
+    snNote(result.changed === false
       ? `${targetName.value} 配置已是最新，共 ${result.count ?? 0} 个日日新模型。`
       : `写入完成：${result.count ?? 0} 个模型已写入 ${targetName.value}。`, 'ok')
     await inspectTargets()
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
 }
 async function doRemove() {
   removeConfirm.value = false
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { snNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('sn-remove')
   try {
     const envelope = await run('sn-remove')
     if (!envelope.ok) throw new Error(envelope.error || '移除失败')
     const result = (envelope.result || {}) as { changed?: boolean }
-    note(result.changed === false
+    snNote(result.changed === false
       ? `没有找到墨桥写入 ${targetName.value} 的日日新条目，配置未改动。`
       : `已移除墨桥写入的日日新条目，${targetName.value} 里其它配置原样保留。`, 'ok')
     await inspectTargets()
   } catch (error) {
-    notifyFailure(error)
+    snFailure(error)
   } finally { pushBusy(null) }
 }
 
@@ -269,9 +357,9 @@ function statusOf(model: SnModel) {
   return { label: result.code === 'not_applicable' ? '不适用' : '不可用', kind: 'error' as const }
 }
 
-// 图像列的三个取值：生图（图像生成模型）/ 识图（对话可发图）/ —（官方未标注）。
+// 图像能力的三个取值：生图（图像生成模型）/ 识图（对话可发图）/ —（官方未标注）。
 // 数据里的 images 布尔混着两种含义——kind='image' 是"能生成图片"，chat 模型上是
-// "能读图片"——列里都用一个「支持」的话，跟脚注里"生图模型标不适用"会对不上
+// "能读图片"——能力标签里都用一个「支持」的话，跟脚注里"生图模型标不适用"会对不上
 // （6.8 Flash 也显示支持，却是可用状态）。展示层必须把这两种含义拆开。
 function imgCell(model: SnModel) {
   if (model.kind === 'image') return { label: '生图', title: '图像生成模型：走 /images/generations，不做文本探测，状态标「不适用」' }
@@ -297,29 +385,24 @@ onMounted(() => {
 
 <template>
   <div class="plan" :class="{ 'rail-collapsed': railCollapsed }">
+    <!-- 左：步骤栏（放回左侧：上方横条占首屏黄金区） -->
     <div class="plan-rail">
       <StepRail v-model:active="active" :steps="rail" :collapsed="railCollapsed" @toggle="toggleRail">
         <template #foot>
-          Key 只存本机（0600），页面拿到的永远是掩码；写入只用你自己的额度。
+          Key 只存本机；检测和写入都用你自己的额度。
         </template>
       </StepRail>
     </div>
 
     <div class="plan-main">
-      <header class="stage-head">
+      <!-- 页头只在第 1 步显示：第 2 步的标题并入卡片、按钮并入表格工具行。 -->
+      <header v-if="active === 'key'" class="stage-head">
         <div class="stage-title">
-          <h2>{{ active === 'key' ? '填写并验证 API Key' : '检测并挑选模型' }}</h2>
-          <p class="stage-sub">用你自己的 API Key 直连日日新，把勾选的模型写进 {{ targetName }}</p>
+          <h2>填写并验证 API Key</h2>
+          <p class="stage-sub">用你的 API Key 直连日日新</p>
         </div>
         <div class="stage-actions">
-          <template v-if="active === 'key'">
-            <NButton size="small" type="primary" :disabled="!keyPresent || busy" title="验证 Key，并把每个对话模型真跑一遍" @click="validate">重新验证并检测</NButton>
-          </template>
-          <template v-else>
-            <NButton size="small" type="primary" :disabled="!keyPresent || busy" title="重新验证 Key，并把每个对话模型真跑一遍" @click="validate">验证并检测</NButton>
-            <NButton size="small" :disabled="!keyPresent || busy" title="只逐模型重新检测，不重新验证 Key" @click="probe()">检测全部</NButton>
-            <NButton size="small" :disabled="!keyPresent || busy || !selection.length" title="只检测已勾选的模型，更省额度" @click="probeSelected">检测选中</NButton>
-          </template>
+          <NButton size="small" type="primary" :disabled="!keyPresent || busy" title="验证 Key，并把每个对话模型真跑一遍" @click="validate">重新验证并检测</NButton>
         </div>
       </header>
 
@@ -327,7 +410,7 @@ onMounted(() => {
       <section v-if="active === 'key'" class="pane" aria-label="填写并验证 API Key">
         <div class="pane-head">
           <h3>API Key</h3>
-          <p>日日新没有本机登录，Key 需要你在控制台自己创建。它只保存在本机数据目录（0600），页面拿到的永远是掩码；保存后会自动鉴权。</p>
+          <p>在日日新控制台创建 API Key，粘贴到这里即可。Key 只保存在本机，保存后会自动验证。</p>
         </div>
         <div class="pane-body">
           <div class="field-row">
@@ -352,21 +435,21 @@ onMounted(() => {
           <!-- 验证结果就地展示：失败原因不藏到第 2 步。 -->
           <p v-if="validation && validation.ok === false" class="inline-error">鉴权失败：{{ validation.error || '未知原因' }}</p>
           <p v-else-if="validated && availableCount" class="inline-ok">
-            鉴权通过，{{ availableCount }} / {{ chatModels.length }} 个对话模型可用 → 已自动进入第 2 步。
+            鉴权通过，{{ availableCount }} / {{ chatModels.length }} 个模型可用，已进入下一步。
           </p>
 
           <div class="field-row">
-            <button type="button" class="link-btn" @click="openDoc(sn.keysUrl as string)">打开日日新控制台 ↗</button>
-            <button type="button" class="link-btn" @click="openDoc(sn.docsUrl as string)">官方文档 ↗</button>
-            <button type="button" class="link-btn" @click="showBase = !showBase">
+            <NButton size="tiny" text class="link-btn" @click="openDoc(sn.keysUrl as string)">打开日日新控制台 ↗</NButton>
+            <NButton size="tiny" text class="link-btn" @click="openDoc(sn.docsUrl as string)">官方文档 ↗</NButton>
+            <NButton size="tiny" text class="link-btn" @click="showBase = !showBase">
               {{ showBase ? '收起接口地址' : '改接口地址' }}
-            </button>
+            </NButton>
           </div>
           <div v-if="showBase" class="field-row">
             <NInput v-model:value="baseInput" size="small" placeholder="https://token.sensenova.cn/v1" :disabled="busy" />
             <NButton size="small" :disabled="busy" @click="saveBase">保存</NButton>
             <NButton size="small" :disabled="busy || !sn.apiBaseCustom" @click="resetBase">恢复默认</NButton>
-            <span class="field-hint">改成自己的反向代理时，验证与写入都会用这个地址。</span>
+            <span class="field-hint">需要走自己的代理时才改这里。</span>
           </div>
 
           <h4 class="sec-title">怎么拿到 Key</h4>
@@ -382,8 +465,8 @@ onMounted(() => {
       <section v-else class="pane table-pane" aria-label="检测并挑选模型">
         <div class="pane-head with-stats">
           <div>
-            <h3>模型清单</h3>
-            <p>清单是官方文档的静态快照（官方没有动态模型目录接口）；「可用」是发真实请求量出来的，不是猜的。</p>
+            <h3>检测并挑选模型</h3>
+            <p>用你的 API Key 直连 <span class="desc-tag">日日新</span>，写入 <span class="desc-tag">{{ targetName }}</span>。<br>「可用」= 实测通过。</p>
           </div>
           <div class="stat-strip" role="group" aria-label="模型统计">
             <!-- 只放清单事实（模型/可用）；勾选是交互状态，统一在下方工具栏右侧显示，
@@ -392,62 +475,33 @@ onMounted(() => {
             <div class="stat"><span class="stat-v" :class="availableCount ? 'ok' : 'na'">{{ availableCount }}</span><span class="stat-k">可用</span></div>
           </div>
         </div>
-        <div class="pane-toolbar">
-          <NButton size="tiny" :disabled="busy || !checkable.length" @click="bulk('available')">只勾选可用（{{ checkable.length }}）</NButton>
-          <NButton size="tiny" :disabled="busy || !selection.length" @click="bulk('none')">全部取消</NButton>
-          <div class="toolbar-right">
-            <span class="sel-strong">已勾选 {{ selection.length }} 个</span>
-            <span class="toolbar-hint">{{ chatModels.length }} 个参与文本检测</span>
-          </div>
-        </div>
+        <TableToolbar :checked="snAllChecked" :indeterminate="snAllIndeterminate"
+          :check-all-disabled="busy || !chatModels.length"
+          :usable-count="checkable.length" :usable-disabled="busy || !checkable.length"
+          :image-usable-count="snImageUsable.length"
+          :cancel-disabled="busy || !selection.length"
+          v-model:only-usable="showUsable"
+          :selected-count="selection.length"
+          @check-all="onSnCheckAll" @select-usable="bulk('available')" @select-image="bulk('image')" @select-none="bulk('none')">
+          <template #actions>
+            <NButton size="tiny" :disabled="!keyPresent || busy" title="重新验证 Key 并逐个测试模型" @click="validate">刷新 SN 目录</NButton>
+            <NButton size="tiny" :disabled="!keyPresent || busy" title="逐个测试模型可用性" @click="probe()">检测 SN 全部</NButton>
+            <NButton size="tiny" :disabled="!keyPresent || busy || !selection.length" title="只检测勾选的模型" @click="probeSelected">检测 SN 选中</NButton>
+          </template>
+        </TableToolbar>
         <div class="table-scroll" tabindex="0" role="region" aria-label="日日新模型清单">
-          <table class="mo-table">
-            <thead>
-              <tr>
-                <th class="col-check"><span class="sr-only">勾选</span></th>
-                <th title="主行是写入客户端后的名字（SN · 前缀标来源），副行是官方中文名">模型</th>
-                <th>能力</th>
-                <th class="col-img" title="识图 = 对话可发图；生图 = 图像生成">图像</th>
-                <th class="col-num">上下文</th>
-                <th>状态</th>
-                <th class="col-num">耗时</th>
-                <th class="col-act"><span class="sr-only">详情</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="model in models" :key="model.upstream" :class="{ chosen: isChecked(model) }">
-                <td class="col-check">
-                  <NCheckbox size="small" :checked="isChecked(model)" :disabled="opBusy"
-                    @update:checked="(v: boolean) => toggle(model, v)" />
-                </td>
-                <td>
-                  <!-- 主名统一为「写入客户端名」（SN · 前缀），副名放官方中文名，
-                       与 AtomCode / OpenCode 三页口径一致：主名就是客户端里会看到的名字。 -->
-                  <div class="cell-name mono">{{ model.id }}</div>
-                  <div class="cell-sub">{{ model.name }}</div>
-                </td>
-                <td><span v-for="cap in model.caps" :key="cap" class="tag">{{ cap }}</span></td>
-                <td class="col-img" :title="imgCell(model).title">
-                  <span :class="model.images ? 'sn-yes' : 'sn-no'">{{ imgCell(model).label }}</span>
-                </td>
-                <td class="col-num mono" :title="model.context ? model.context + ' tokens' : (sn.contextUnknown as string)">{{ contextText(model.context) }}</td>
-                <td>
-                  <span class="sn-state" :class="statusOf(model).kind">
-                    <i class="sn-dot" :class="statusOf(model).kind" />{{ statusOf(model).label }}
-                  </span>
-                </td>
-                <td class="col-num mono">{{ resultOf(model)?.latencyMs != null ? resultOf(model)?.latencyMs + ' ms' : '—' }}</td>
-                <td class="col-act"><NButton size="tiny" quaternary @click="detail = model">详情</NButton></td>
-              </tr>
-            </tbody>
-          </table>
+          <ModelTable :models="snRows" source-prefix="SN · " aria-label="日日新模型清单"
+            :model-results="{}" :available-models="[]" :excluded-models="[]" :probe="{}" :activity="[]"
+            :busy="opBusy" :empty-text="models.length ? '没有符合当前筛选的模型' : '验证 Key 后会自动读取模型清单。'"
+            :status-map="snStatusMap" :checked-ids="selection" :latency-text="snLatency"
+            :checking-ids="retesting ? [retesting] : []"
+            @select="onSnSelect" @probe-one="onSnRetest" @detail="onSnDetail" />
         </div>
-        <p class="legend">图像列：识图＝对话可发图；生图＝图像生成模型，走 <code>/images/generations</code>，不做文本探测，状态标「不适用」而不是「不可用」；—＝官方未标注支持图片。上下文、耗时的「—」表示官方未公开该数值，页面不编造。勾选后在右侧「写入配置」里写入。主行是写入客户端后的名字，<code>OC · / AC · / SN ·</code> 是三路来源前缀，防止同名模型互相覆盖。</p>
+        <p class="legend">「识图」= 可以发图片；「生图」= 图像生成，不参与检测，标「不适用」；「—」= 官方未公开。勾选 = 要写入。</p>
       </section>
 
       <footer class="page-foot">
-        <span>Key 与配置只存本机；写入只增删墨桥自己标记的条目</span>
-        <span>耗时为完整请求往返用时</span>
+        <span>Key 只存本机 · 耗时为完整请求用时</span>
       </footer>
     </div>
 
@@ -465,9 +519,11 @@ onMounted(() => {
         </template>
       </TargetCard>
 
-      <WriteCard v-if="active === 'select'" :target-name="targetName" :write-label="writeLabel" :count="selection.length"
+      <WriteCard v-if="active === 'select' || state.target === 'trae'" :target-name="targetName" :write-label="writeLabel" :count="selection.length"
         :write-disabled="busy || !canWrite" :write-reason="writeReason"
         :remove-disabled="busy || !canRemove" :remove-reason="removeReason" :preview="previewNames"
+        :guide="state.target === 'trae' ? { address: (sn.apiBase || '') + '/chat/completions', keyAction: 'copy-sensenova-key', models: selection } : null"
+        :meta="Object.fromEntries((sn.models || []).map((m: any) => [m.upstream, { context: m.context ?? null, images: m.images === true, levels: m.levels || [] }]))"
         @write="writeConfirm = true" @remove="removeConfirm = true" />
     </div>
 
@@ -478,9 +534,9 @@ onMounted(() => {
           <dt>写入目标</dt><dd>{{ targetName }}</dd>
           <dt>目标文件</dt><dd class="mono">{{ targetPath }}</dd>
           <dt>将写入模型</dt><dd>{{ selection.length }} 个（已勾选）</dd>
-          <dt>写入方式</dt><dd>带 owner 标记的覆盖式同步，只替换墨桥写入的日日新条目</dd>
+          <dt>写入方式</dt><dd>只替换墨桥写入的条目</dd>
         </dl>
-        <p v-if="!selection.length" class="confirm-note">当前没有勾选任何模型；确认后会清空墨桥在 {{ targetName }} 的日日新条目，不动其它配置。</p>
+        <p v-if="!selection.length" class="confirm-note">没有勾选任何模型；确认后会清空墨桥在 {{ targetName }} 的条目。</p>
       </section>
     </ConfirmModal>
 
@@ -491,7 +547,7 @@ onMounted(() => {
         <dl class="confirm-grid">
           <dt>写入目标</dt><dd>{{ targetName }}</dd>
           <dt>目标文件</dt><dd class="mono">{{ targetPath }}</dd>
-          <dt>将移除条目</dt><dd>墨桥写入的日日新条目（OpenCode、AtomCode 与你自己写的配置原样保留）</dd>
+          <dt>将移除条目</dt><dd>只移除墨桥写入的条目，你的配置不受影响</dd>
         </dl>
       </section>
     </ConfirmModal>
@@ -503,7 +559,7 @@ onMounted(() => {
             <h3>{{ detail.name }}</h3>
             <p class="mono">{{ detail.upstream }}</p>
           </div>
-          <button class="sn-detail-x" type="button" aria-label="关闭" @click="detail = null">×</button>
+          <NButton size="tiny" quaternary circle class="sn-detail-x" aria-label="关闭" @click="detail = null">×</NButton>
         </header>
         <dl class="sn-detail-grid">
           <dt>能力</dt><dd>{{ detail.caps.join('、') || '—' }}</dd>
@@ -530,7 +586,6 @@ onMounted(() => {
 .sn-state.ok { color: var(--success-text); }
 .sn-state.error { color: var(--error-text); }
 .sn-state.na { color: var(--disabled-text); }
-.sel-strong { color: var(--text); font-weight: 650; }
 .key-kv { margin-top: 12px; max-width: 460px; }
 .aside-kv { gap: 4px; }
 .aside-kv > div { font-size: 11.5px; }
@@ -540,7 +595,7 @@ onMounted(() => {
 .sn-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .sn-detail-head h3 { margin: 0; font-size: 15px; }
 .sn-detail-head p { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
-.sn-detail-x { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.sn-detail-x { color: var(--muted); font-size: 15px; }
 .sn-detail-grid { display: grid; grid-template-columns: 84px 1fr; gap: 8px 12px; margin: 14px 0 0; font-size: 12px; }
 .sn-detail-grid dt { color: var(--muted); }
 .sn-detail-grid dd { margin: 0; }

@@ -8,9 +8,9 @@
 // 两步：安装登录 / 选择模型。写入跟目标绑定，放在右列「写入配置」卡里——
 // 切 WorkBuddy、DSH、墨坊，按钮措辞与写入内容一起变。
 import { ref, computed, onMounted, watch } from 'vue'
-import { NButton, NCheckbox, NInput, NModal } from 'naive-ui'
+import { NButton, NInput, NModal } from 'naive-ui'
 import {
-  useService, note, run, callAction, pushBusy, operationBusy, controlsBusy, inspectTargets,
+  useService, note as baseNote, run, callAction, pushBusy, operationBusy, controlsBusy, inspectTargets,
 } from '../composables/useService'
 import StepRail from '../components/StepRail.vue'
 import type { RailStep } from '../utils/steps'
@@ -22,6 +22,14 @@ import ConfirmModal from '../components/ConfirmModal.vue'
 import { targetLabel, targetPathOf, writeLabelOf, inspectionOf, sourceSliceOf } from '../utils/target'
 import { clientName } from '../utils/naming'
 import { notifyFailure } from '../utils/errors'
+
+// 本页产生的通知统一标 AtomCode 来源：通知中心里跟日日新的消息一眼分开。
+function acNote(text: string, kind: '' | 'ok' | 'error' = '', opts: { stream?: string, detail?: string } = {}) {
+  baseNote(text, kind, { ...opts, source: 'AtomCode' })
+}
+function acFailure(raw: unknown, opts: { fallback?: string, prefix?: string } = {}) {
+  notifyFailure(raw, { ...opts, source: 'AtomCode' })
+}
 
 type AcModel = { id: string, upstream: string, name: string, context: number | null, images: boolean, levels: string[] }
 
@@ -104,69 +112,77 @@ const active = ref<string>(currentStep.value)
 watch(currentStep, (next, prev) => { if (active.value === prev) active.value = next })
 
 // 切换目标：被拦住时把原因说出来（原来静默 return，用户以为按钮坏了）。
-async function switchTarget(value: 'workbuddy' | 'dsh' | 'mofang') {
+async function switchTarget(value: 'workbuddy' | 'dsh' | 'mofang' | 'qoder' | 'trae') {
   if (value === state.value.target) return
   pushBusy('target')
   try {
     const envelope = await run('target', value)
     if (!envelope.ok) throw new Error(envelope.error || '切换失败')
-    note(`已切换到 ${targetLabel(value)}。`, 'ok')
+    acNote(`已切换到 ${targetLabel(value)}。`, 'ok')
   } catch (error) {
-    notifyFailure(error)
+    acFailure(error)
   } finally { pushBusy(null) }
 }
 async function recheck() {
   const envelope = await inspectTargets()
-  if (envelope.ok) note(`已重新体检 ${targetName.value} 里的墨桥条目。`, 'ok')
-  else notifyFailure(envelope.error, { fallback: '体检失败', prefix: '体检失败：' })
+  if (envelope.ok) acNote(`已重新体检 ${targetName.value} 里的墨桥条目。`, 'ok')
+  else acFailure(envelope.error, { fallback: '体检失败', prefix: '体检失败：' })
 }
 
 // ── 安装 / 登录 ─────────────────────────────────────────────────────────
 async function detect() {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('ac-detect')
   try {
     const envelope = await run('ac-detect', undefined, 60000)
     if (!envelope.ok) throw new Error(envelope.error || '检测失败')
-    note(installed.value ? `已检测到 AtomCode ${ac.value.version || ''}。` : '本机未安装 AtomCode。', installed.value ? 'ok' : 'error')
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+    acNote(installed.value ? `已检测到 AtomCode ${ac.value.version || ''}。` : '本机未安装 AtomCode。', installed.value ? 'ok' : 'error')
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
 async function install() {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('ac-install')
-  note('正在调用系统包管理器安装 AtomCode，这一步可能几分钟…', 'ok', { stream: 'ac-install' })
+  acNote('正在调用系统包管理器安装 AtomCode，这一步可能几分钟…', 'ok', { stream: 'ac-install' })
   try {
     const envelope = await run('ac-install', undefined, 320000)
     if (!envelope.ok) throw new Error(envelope.error || '安装失败')
     const result = (envelope.result || {}) as { ok?: boolean, output?: string }
-    if (result.ok) note('安装命令执行完成；若仍显示未安装，请重启本页或检查包管理器输出。', 'ok')
+    if (result.ok) acNote('安装命令执行完成；若仍显示未安装，请重启本页或检查包管理器输出。', 'ok')
     // 失败时不要把整段英文 CLI 输出塞进浮层：翻译成结论，原文进通知中心。
-    else notifyFailure(result.output, { fallback: '安装未成功', prefix: '安装未成功：' })
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+    else acFailure(result.output, { fallback: '安装未成功', prefix: '安装未成功：' })
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
+const reloginConfirm = ref(false)
 async function login() {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  // 已有凭据时先确认：重新登录会覆盖现有授权，也避免「失败通知」和「已登录」在通知中心里打架。
+  if (loggedIn.value) { reloginConfirm.value = true; return }
+  await doLogin()
+}
+async function doLogin() {
   pushBusy('ac-login')
-  note('已调起 atomcode login；请在浏览器完成授权，完成后本页会自动刷新目录。', 'ok', { stream: 'ac-login' })
+  acNote('已弹出「AtomCode 登录」终端窗口；请在窗口里完成登录，浏览器授权后本页会自动刷新目录。', 'ok', { stream: 'ac-login' })
   try {
     const envelope = await run('ac-login', undefined, 200000)
     if (!envelope.ok) throw new Error(envelope.error || '登录失败')
     const result = (envelope.result || {}) as { ok?: boolean, output?: string }
-    if (result.ok) note(`登录完成，已读取到 ${models.value.length} 个免费模型。`, 'ok')
-    // 登录失败最常见的原文是「Windows interactive mode requires console input…」，
-    // 中文结论会告诉用户"去 PowerShell 手动跑 atomcode login"。
-    else notifyFailure(result.output, { fallback: '登录未完成', prefix: '登录未完成：' })
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+    if (result.ok) acNote(`登录完成，已读取到 ${models.value.length} 个免费模型。`, 'ok')
+    // 弹窗链路失败通常是"等待授权超时"或终端没弹出来（兜底原文里仍有 PowerShell 手动方案）。
+    else acFailure(result.output, { fallback: '登录未完成', prefix: '登录未完成：' })
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
 async function refreshCatalog() {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('ac-refresh')
   try {
-    const envelope = await run('ac-refresh', undefined, 60000)
+    const envelope = await run('ac-refresh', undefined, 120000)
     if (!envelope.ok) throw new Error(envelope.error || '刷新失败')
-    note(catalogSource.value === 'live' ? `已从 AtomCode 实时目录刷新到 ${models.value.length} 个免费模型。`
-      : '实时目录不可用，当前显示 config.toml 的离线快照。', catalogSource.value === 'live' ? 'ok' : 'error')
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+    const rejected = rejectedModels.value.map(model => model.id)
+    const head = catalogSource.value === 'live' ? `已从 AtomCode 实时目录刷新到 ${models.value.length} 个免费模型。`
+      : '实时目录不可用，当前显示 config.toml 的离线快照。'
+    acNote(rejected.length ? `${head}可用性校验：${rejected.join('、')} 被上游拒绝，不可写入。` : head,
+      rejected.length ? 'error' : catalogSource.value === 'live' ? 'ok' : 'error')
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
 
 // ── 网关 ───────────────────────────────────────────────────────────────
@@ -174,34 +190,144 @@ const showGateway = ref(false)
 const gatewayInput = ref('')
 async function saveGateway() {
   const envelope = await callAction('ac-save-gateway', gatewayInput.value.trim())
-  if (!envelope.ok) { notifyFailure(envelope.error, { fallback: '保存失败' }); return }
-  note('网关地址已保存，转发口会立刻改用它。', 'ok')
+  if (!envelope.ok) { acFailure(envelope.error, { fallback: '保存失败' }); return }
+  acNote('网关地址已保存，转发口会立刻改用它。', 'ok')
 }
 async function resetGateway() {
   const envelope = await callAction('ac-reset-gateway')
-  if (envelope.ok) { gatewayInput.value = ''; note('已恢复官方默认网关。', 'ok') }
-  else notifyFailure(envelope.error, { fallback: '恢复失败' })
+  if (envelope.ok) { gatewayInput.value = ''; acNote('已恢复官方默认网关。', 'ok') }
+  else acFailure(envelope.error, { fallback: '恢复失败' })
 }
 
 // ── 勾选 ───────────────────────────────────────────────────────────────
 const checked = computed(() => new Set(selection.value))
+// 探测结果来自服务的 ac-refresh（真跑一遍可用性），拿不到时按"可用"对待。
+type AcProbe = { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }
+const probeMap = computed<Record<string, AcProbe>>(() => (ac.value.probe || {}) as Record<string, AcProbe>)
+function probeOf(model: AcModel) { return probeMap.value[model.upstream] }
+const rejectedModels = computed(() => models.value.filter(model => probeOf(model)?.reason === 'rejected'))
+const rejectedDetail = computed(() => (rejectedModels.value[0] ? probeOf(rejectedModels.value[0])?.detail || '未知原因' : ''))
 function isChecked(model: AcModel) { return checked.value.has(model.upstream) }
 async function toggle(model: AcModel, next: boolean) {
   if (opBusy.value) return
+  if (next && probeOf(model)?.reason === 'rejected') {
+    acNote(`上游拒绝了 ${model.id}（${probeOf(model)?.detail || '未知原因'}），不可写入。`, 'error'); return
+  }
   const ids = new Set(selection.value)
   if (next) ids.add(model.upstream); else ids.delete(model.upstream)
   const envelope = await callAction('ac-selection', Array.from(ids), 20000, { keepNote: true })
-  if (!envelope.ok) notifyFailure(envelope.error, { fallback: '勾选更新失败' })
+  if (!envelope.ok) acFailure(envelope.error, { fallback: '勾选更新失败' })
 }
-async function bulk(mode: 'all' | 'none') {
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
-  const ids = mode === 'all' ? models.value.map(model => model.upstream) : []
+// 只看可用开关：过滤表格行（勾选记录不受影响，关掉开关全部回来）。
+const showUsable = ref(false)
+// 探测判定为「可用」的模型（目录说可用 ≠ 网关真路由，判定来自哨兵词探测）。
+const usableModels = computed(() => models.value.filter(model => ac.value.probe?.[model.upstream]?.ok === true))
+const tableModels = computed(() => (showUsable.value ? usableModels.value : models.value))
+async function bulk(mode: 'available' | 'image' | 'none') {
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  const ids = mode === 'available' ? usableModels.value.map(model => model.upstream)
+    : mode === 'image' ? acImageUsable.value
+    : []
   pushBusy('ac-selection')
   try {
     const envelope = await callAction('ac-selection', ids, 20000)
     if (!envelope.ok) throw new Error(envelope.error || '勾选更新失败')
-    note(mode === 'all' ? `已勾选全部 ${ids.length} 个模型。` : '已取消全部勾选。', 'ok')
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+    acNote(mode === 'available' ? `已勾选 ${ids.length} 个可用模型。` : mode === 'image' ? `已勾选 ${ids.length} 个支持识图的可用模型。` : '已取消全部勾选。', 'ok')
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
+}
+
+// 「只勾选识图」的候选：可用且 images=true（对话可发图）的模型。
+const acImageUsable = computed(() => usableModels.value.filter(model => model.images).map(model => model.upstream))
+
+// 批量检测：与单模型重测同一条 ac-probe 链路——空数组=全部，ids=只测勾选的。
+async function probeAll() {
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  pushBusy('ac-probe')
+  acNote(`正在检测全部 ${models.value.length} 个模型的可用性…`, 'ok', { stream: 'ac-probe' })
+  try {
+    const envelope = await callAction('ac-probe', [], 180000)
+    if (!envelope.ok) throw new Error(envelope.error || '检测失败')
+    acNote(`检测完成：${usableModels.value.length} / ${models.value.length} 个可用。`, 'ok')
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
+}
+async function probeSelected() {
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (!selection.value.length) { acNote('请先勾选要检测的模型。', 'error'); return }
+  pushBusy('ac-probe')
+  acNote(`正在检测选中的 ${selection.value.length} 个模型…`, 'ok', { stream: 'ac-probe' })
+  try {
+    const envelope = await callAction('ac-probe', selection.value.slice(), 180000)
+    if (!envelope.ok) throw new Error(envelope.error || '检测失败')
+    acNote('检测完成，结果已更新。', 'ok')
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
+}
+
+// 全选 checkbox 的口径与另两页一致：当前可见且未被上游拒绝的模型。
+// 勾=并入 selection，取消=从 selection 移除；只动可见的，未显示的勾选记录不动。
+const acCheckableVisible = computed(() => tableModels.value.filter(m => probeOf(m)?.reason !== 'rejected').map(m => m.upstream))
+const acCheckedVisible = computed(() => acCheckableVisible.value.filter(id => selection.value.includes(id)).length)
+const acAllChecked = computed(() => acCheckableVisible.value.length > 0 && acCheckedVisible.value === acCheckableVisible.value.length)
+const acAllIndeterminate = computed(() => acCheckedVisible.value > 0 && acCheckedVisible.value < acCheckableVisible.value.length)
+async function onAcCheckAll(next: boolean) {
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  const ids = new Set(selection.value)
+  if (next) acCheckableVisible.value.forEach(id => ids.add(id))
+  else acCheckableVisible.value.forEach(id => ids.delete(id))
+  const envelope = await callAction('ac-selection', Array.from(ids), 20000, { keepNote: true })
+  if (!envelope.ok) acFailure(envelope.error, { fallback: '勾选更新失败' })
+}
+
+// 单模型重测：只重跑这一条的哨兵词探测（省额度），结论并入缓存表。
+const retesting = ref<string | null>('')
+async function retest(model: AcModel) {
+  if (opBusy.value) { acNote('有操作正在进行，请稍候。', 'error'); return }
+  retesting.value = model.upstream
+  pushBusy('ac-probe')
+  try {
+    const envelope = await callAction('ac-probe', [model.upstream], 120000)
+    if (!envelope.ok) throw new Error(envelope.error || '重测失败')
+    const r = (envelope.result || {}) as { probe?: Record<string, { reason?: string, detail?: string | null }> }
+    const verdict = r.probe?.[model.upstream]
+    acNote(verdict?.reason === 'ok'
+      ? `${model.id} 重测通过。`
+      : verdict?.reason === 'rejected' ? `${model.id} 被上游拒绝：${verdict.detail || '未知原因'}`
+      : `${model.id} 重测未得出结论：${verdict?.detail || '网络或接口故障'}`, verdict?.reason === 'ok' ? 'ok' : 'error')
+  } catch (error) { acFailure(error) } finally { retesting.value = null; pushBusy(null) }
+}
+
+// ── 统一表格适配：把 AcModel 映射成 ModelTable 的通用行模型 ──────────────
+import ModelTable from '../components/ModelTable.vue'
+import TableToolbar from '../components/TableToolbar.vue'
+const acRows = computed(() => tableModels.value.map(m => ({
+  id: m.upstream,
+  name: m.id.replace(/^AC · /, ''),
+  contextText: contextText(m.context),
+  images: m.images,
+  levels: m.levels,
+})))
+const acStatusMap = computed(() => {
+  const map: Record<string, { label: string, kind: 'ok' | 'error' | 'checking' | 'na', reason?: string | null }> = {}
+  for (const m of tableModels.value) {
+    const p = probeOf(m)
+    if (retesting.value === m.upstream) map[m.upstream] = { label: '检测中', kind: 'checking' }
+    else if (p?.reason === 'ok') map[m.upstream] = { label: '可用', kind: 'ok' }
+    else if (p?.reason === 'rejected') map[m.upstream] = { label: '不可用', kind: 'error', reason: p?.detail || '套餐未启用或模型已下线' }
+    else map[m.upstream] = { label: '未检测', kind: 'na' }
+  }
+  return map
+})
+const rejectedIds = computed(() => tableModels.value.filter(m => probeOf(m)?.reason === 'rejected').map(m => m.upstream))
+function onAcSelect(id: string, checked: boolean) {
+  const model = tableModels.value.find(x => x.upstream === id)
+  if (model) void toggle(model, checked)
+}
+function onAcRetest(id: string) {
+  const model = tableModels.value.find(x => x.upstream === id)
+  if (model) void retest(model)
+}
+function onAcDetail(row: { id: string }) {
+  const model = tableModels.value.find(x => x.upstream === row.id)
+  if (model) detail.value = model
 }
 
 // ── 写入 / 移除 ─────────────────────────────────────────────────────────
@@ -209,32 +335,33 @@ const writeConfirm = ref(false)
 const removeConfirm = ref(false)
 async function doWrite() {
   writeConfirm.value = false
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('ac-import')
-  note(`正在把 ${selection.value.length} 个模型写入 ${targetName.value}…`, 'ok', { stream: 'ac-import' })
+  acNote(`正在把 ${selection.value.length} 个模型写入 ${targetName.value}…`, 'ok', { stream: 'ac-import' })
   try {
     const envelope = await run('ac-import', undefined, 150000)
     if (!envelope.ok) throw new Error(envelope.error || '写入失败')
-    const result = (envelope.result || {}) as { changed?: boolean, count?: number }
-    note(result.changed === false
-      ? `${targetName.value} 配置已是最新，共 ${result.count ?? 0} 个 AtomCode 模型。`
-      : `写入完成：${result.count ?? 0} 个模型已写入 ${targetName.value}。`, 'ok')
+    const result = (envelope.result || {}) as { changed?: boolean, count?: number, blocked?: number }
+    const blockedNote = result.blocked ? `另有 ${result.blocked} 个被上游拒绝的模型未写入。` : ''
+    acNote(result.changed === false
+      ? `${targetName.value} 配置已是最新，共 ${result.count ?? 0} 个 AtomCode 模型。${blockedNote}`
+      : `写入完成：${result.count ?? 0} 个模型已写入 ${targetName.value}。${blockedNote}`, 'ok')
     await inspectTargets()
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
 async function doRemove() {
   removeConfirm.value = false
-  if (opBusy.value) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
+  if (opBusy.value) { acNote('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   pushBusy('ac-remove')
   try {
     const envelope = await run('ac-remove')
     if (!envelope.ok) throw new Error(envelope.error || '移除失败')
     const result = (envelope.result || {}) as { changed?: boolean }
-    note(result.changed === false
+    acNote(result.changed === false
       ? `没有找到墨桥写入 ${targetName.value} 的 AtomCode 条目，配置未改动。`
       : `已移除墨桥写入的 AtomCode 条目，${targetName.value} 里其它配置原样保留。`, 'ok')
     await inspectTargets()
-  } catch (error) { notifyFailure(error) } finally { pushBusy(null) }
+  } catch (error) { acFailure(error) } finally { pushBusy(null) }
 }
 
 const detail = ref<AcModel | null>(null)
@@ -249,31 +376,26 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
 
 <template>
   <div class="plan" :class="{ 'rail-collapsed': railCollapsed }">
+    <!-- 左：步骤栏（放回左侧：上方横条占首屏黄金区） -->
     <div class="plan-rail">
       <StepRail v-model:active="active" :steps="rail" :collapsed="railCollapsed" @toggle="toggleRail">
         <template #foot>
-          AtomCode 的凭据只留在服务进程；写进客户端的是墨桥本机转发口 + 本机口令。
+          凭据只留在本机，客户端里只有转发口地址。
         </template>
       </StepRail>
     </div>
 
     <div class="plan-main">
-      <header class="stage-head">
+      <!-- 页头只在第 1 步显示：第 2 步的标题并入卡片、按钮并入表格工具行。 -->
+      <header v-if="active === 'install'" class="stage-head">
         <div class="stage-title">
-          <h2>{{ active === 'install' ? '安装与登录 AtomCode' : '选择免费模型' }}</h2>
-          <p class="stage-sub">把 AtomCode 的免费模型经墨桥转发口接进 {{ targetName }}</p>
+          <h2>安装与登录 AtomCode</h2>
+          <p class="stage-sub">把 AtomCode 的免费模型接进 {{ targetName }}</p>
         </div>
         <div class="stage-actions">
-          <template v-if="active === 'install'">
-            <NButton size="small" :disabled="busy" title="重新检测本机是否已安装 AtomCode" @click="detect">重新检测</NButton>
-            <NButton size="small" type="primary" :disabled="busy || installed" @click="install">一键安装</NButton>
-            <NButton size="small" :disabled="busy || !installed" @click="login">登录 AtomCode</NButton>
-          </template>
-          <template v-else>
-            <NButton size="small" :disabled="busy || !installed" title="从 AtomCode 实时接口重新读取免费模型（只刷新清单，不影响当前步骤）" @click="refreshCatalog">刷新目录</NButton>
-            <NButton size="small" :disabled="busy || !models.length" @click="bulk('all')">全选</NButton>
-            <NButton size="small" :disabled="busy || !selection.length" @click="bulk('none')">全部取消</NButton>
-          </template>
+          <NButton size="small" :disabled="busy" title="重新检测本机是否已安装 AtomCode" @click="detect">重新检测</NButton>
+          <NButton size="small" type="primary" :disabled="busy || installed" @click="install">一键安装</NButton>
+          <NButton size="small" :disabled="busy || !installed" :title="loggedIn ? '已有登录凭据，重新登录会覆盖现有授权' : '弹出终端窗口执行 atomcode login，在窗口里完成登录授权'" @click="login">登录 AtomCode</NButton>
         </div>
       </header>
 
@@ -281,14 +403,14 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
       <section v-if="active === 'install'" class="pane" aria-label="安装与登录">
         <div class="pane-head">
           <h3>本机客户端</h3>
-          <p>AtomCode 是桌面客户端，必须先装在本机；登录走它自己的浏览器 OAuth，墨桥只负责调起并把登录态读出来。</p>
+          <p>先安装 AtomCode 并登录。点「登录」会弹出终端完成授权，完成后自动刷新目录；终端没弹出就在 PowerShell 里手动执行 <code>atomcode login</code>。</p>
         </div>
         <div class="pane-body">
           <div class="field-row">
             <span class="chip" :class="installed ? 'ok' : 'na'">{{ installed ? '已安装 · ' + (ac.version || '版本未知') : '未检测到 AtomCode' }}</span>
             <span class="chip" :class="loggedIn ? 'ok' : 'na'">{{ loggedIn ? '已登录 · ' + (ac.account?.username || '—') : '未登录' }}</span>
-            <button type="button" class="link-btn" @click="openDoc(ac.siteUrl as string)">AtomCode 官网 ↗</button>
-          <button type="button" class="link-btn" @click="openDoc(ac.docsUrl as string)">官方文档 ↗</button>
+          <NButton size="tiny" text class="link-btn" @click="openDoc(ac.siteUrl as string)">AtomCode 官网 ↗</NButton>
+          <NButton size="tiny" text class="link-btn" @click="openDoc(ac.docsUrl as string)">官方文档 ↗</NButton>
           </div>
 
           <dl class="kv gateway-kv">
@@ -298,20 +420,20 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
             <div v-if="ac.binary"><dt>二进制</dt><dd class="mono">{{ ac.binary }}</dd></div>
           </dl>
 
-          <p class="install-cmd">安装命令（固定白名单，不拼接任何输入）：<code>{{ ac.install?.command }}</code></p>
+          <p class="install-cmd">安装命令：<code>{{ ac.install?.command }}</code></p>
           <p v-if="ac.catalogError && catalogSource !== 'live'" class="inline-warn">实时目录不可用：{{ ac.catalogError }}</p>
 
           <h4 class="sec-title">上游网关</h4>
           <div class="field-row">
-            <button type="button" class="link-btn" @click="showGateway = !showGateway">
+            <NButton size="tiny" text class="link-btn" @click="showGateway = !showGateway">
               {{ showGateway ? '收起' : '当前 ' + (ac.gateway || '官方默认') + '，点此修改' }}
-            </button>
+            </NButton>
           </div>
           <div v-if="showGateway" class="field-row">
             <NInput v-model:value="gatewayInput" size="small" placeholder="https://api-ai.gitcode.com" :disabled="busy" />
             <NButton size="small" :disabled="busy" @click="saveGateway">保存</NButton>
             <NButton size="small" :disabled="busy || !ac.gatewayCustom" @click="resetGateway">恢复默认</NButton>
-            <span class="field-hint">改成自己的代理时，转发口会立刻改用它。</span>
+            <span class="field-hint">需要走自己的代理时才改这里。</span>
           </div>
         </div>
       </section>
@@ -320,55 +442,51 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
       <section v-else class="pane table-pane" aria-label="选择模型">
         <div class="pane-head with-stats">
           <div>
-            <h3>免费模型清单</h3>
-            <p>目录按你的账号档位实时返回；接口不可用时回落到 <code>~/.atomcode/config.toml</code> 里登录时写下的快照。</p>
+            <h3>检测并挑选模型</h3>
+            <p>把 <span class="desc-tag">AtomCode</span> 的免费模型接进 <span class="desc-tag">{{ targetName }}</span>。<br>「可用」= 实测通过。</p>
           </div>
           <div class="stat-strip" role="group" aria-label="模型统计">
             <div class="stat"><span class="stat-v">{{ models.length }}</span><span class="stat-k">模型</span></div>
-            <div class="stat"><span class="stat-v" :class="selection.length ? 'ok' : 'na'">{{ selection.length }}</span><span class="stat-k">已勾选</span></div>
+            <div class="stat"><span class="stat-v" :class="usableModels.length ? 'ok' : 'na'">{{ usableModels.length }}</span><span class="stat-k">可用</span></div>
           </div>
         </div>
+        <TableToolbar :checked="acAllChecked" :indeterminate="acAllIndeterminate"
+          :check-all-disabled="busy || !acCheckableVisible.length"
+          :usable-count="usableModels.length" :usable-disabled="busy || !usableModels.length"
+          :image-usable-count="acImageUsable.length"
+          :cancel-disabled="busy || !selection.length"
+          v-model:only-usable="showUsable"
+          :selected-count="selection.length"
+          @check-all="onAcCheckAll" @select-usable="bulk('available')" @select-image="bulk('image')" @select-none="bulk('none')">
+          <template #actions>
+            <NButton size="tiny" :disabled="busy || !installed" title="重新读取免费模型" @click="refreshCatalog">刷新 AC 目录</NButton>
+            <NButton size="tiny" :disabled="busy || !models.length" title="逐个测试模型可用性" @click="probeAll">检测 AC 全部</NButton>
+            <NButton size="tiny" :disabled="busy || !selection.length" title="只检测勾选的模型" @click="probeSelected">检测 AC 选中</NButton>
+          </template>
+        </TableToolbar>
+        <!-- daemon 挂了会降级网关探测：结论口径一致，但要告诉用户原因与出路。
+             不自动重登——atomcode login 必须弹终端走浏览器 OAuth，静默重试只会再弹一个黑窗。 -->
+        <p v-if="loggedIn && ac.probeVia === 'gateway'" class="probe-note">
+          本机 daemon 未就绪，已改走网关检测。持续出现时点
+          <NButton size="tiny" text type="primary" @click="login">重新登录</NButton>
+          恢复。
+        </p>
         <div class="table-scroll" tabindex="0" role="region" aria-label="AtomCode 模型清单">
-          <table class="mo-table">
-            <thead>
-              <tr>
-                <th class="col-check"><span class="sr-only">勾选</span></th>
-                <th title="主行是写入客户端后的名字（AC · 前缀标来源），副行是上游真名">模型</th>
-                <th class="col-num">上下文</th>
-                <th>推理档位</th>
-                <th class="col-img" title="识图 = 对话可发图（来自 supports_vision）">图像</th>
-                <th class="col-act"><span class="sr-only">详情</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="model in models" :key="model.upstream" :class="{ chosen: isChecked(model) }">
-                <td class="col-check">
-                  <NCheckbox size="small" :checked="isChecked(model)" :disabled="opBusy"
-                    @update:checked="(v: boolean) => toggle(model, v)" />
-                </td>
-                <td>
-                  <div class="cell-name">{{ model.id }}</div>
-                  <div class="cell-sub mono">{{ model.upstream }}</div>
-                </td>
-                <td class="col-num mono">{{ contextText(model.context) }}</td>
-                <td><span v-for="level in model.levels" :key="level" class="tag">{{ level }}</span><span v-if="!model.levels.length" class="dash">—</span></td>
-                <td class="col-img" :title="model.images ? '多模态对话：可以把图片发给它' : '官方未标注支持图片'">
-                  <span :class="model.images ? 'sn-yes' : 'sn-no'">{{ model.images ? '识图' : '—' }}</span>
-                </td>
-                <td class="col-act"><NButton size="tiny" quaternary @click="detail = model">详情</NButton></td>
-              </tr>
-              <tr v-if="!models.length">
-                <td colspan="6" class="empty-cell">{{ installed ? '尚未登录或目录为空；回第 1 步登录后会自动刷新。' : '先安装 AtomCode，再登录。' }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <ModelTable :models="acRows" source-prefix="AC · " aria-label="AtomCode 模型清单"
+            :model-results="{}" :available-models="[]" :excluded-models="[]" :probe="{}" :activity="[]"
+            :busy="busy" :empty-text="installed ? '登录后会自动读取模型清单。' : '先安装 AtomCode，再登录。'"
+            :status-map="acStatusMap" :checked-ids="selection" :disabled-ids="rejectedIds"
+            :checking-ids="retesting ? [retesting] : []"
+            @select="onAcSelect" @probe-one="onAcRetest" @detail="onAcDetail" />
         </div>
-        <p class="legend">主行是写入客户端后的名字；<code>OC · / AC · / SN ·</code> 是三路来源前缀，防止同名模型在同一份配置里互相覆盖。转发口会把 <code>AC · 模型名</code> 换回上游真名再发出去。勾选后在右侧「写入配置」里写入。</p>
+        <p v-if="rejectedModels.length" class="probe-note">
+          {{ rejectedModels.map(m => m.id).join('、') }} 被上游拒绝（{{ rejectedDetail }}），已禁止勾选。
+        </p>
+        <p class="legend">勾选 = 要写入。</p>
       </section>
 
       <footer class="page-foot">
-        <span>上游凭据只留在服务进程；写入目标里只有本机转发口地址与本机口令</span>
-        <span>{{ ac.bridgeRunning ? '转发口 ' + ac.endpoint : '转发口未启动' }}</span>
+        <span>凭据只留在本机服务 · {{ ac.bridgeRunning ? '转发口 ' + ac.endpoint : '转发口未启动' }}</span>
       </footer>
     </div>
 
@@ -386,9 +504,11 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
         </template>
       </TargetCard>
 
-      <WriteCard v-if="active === 'models'" :target-name="targetName" :write-label="writeLabel" :count="selection.length"
+      <WriteCard v-if="active === 'models' || state.target === 'trae'" :target-name="targetName" :write-label="writeLabel" :count="selection.length"
         :write-disabled="busy || !canWrite" :write-reason="writeReason"
         :remove-disabled="busy || !canRemove" :remove-reason="removeReason" :preview="previewNames"
+        :guide="state.target === 'trae' ? { address: (ac.endpoint || '') + '/v1/chat/completions', keyAction: 'copy-atomcode-key', models: selection } : null"
+        :meta="Object.fromEntries(models.map((m: any) => [m.id, { context: m.context ?? null, images: m.images === true, levels: m.levels || [] }]))"
         @write="writeConfirm = true" @remove="removeConfirm = true" />
     </div>
 
@@ -400,8 +520,16 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
           <dt>目标文件</dt><dd class="mono">{{ targetPath }}</dd>
           <dt>将写入模型</dt><dd>{{ selection.length }} 个（已勾选）</dd>
           <dt>接入地址</dt><dd class="mono">{{ ac.endpoint }}</dd>
-          <dt>写入方式</dt><dd>带 owner 标记的覆盖式同步，只替换墨桥写入的 AtomCode 条目</dd>
+          <dt>写入方式</dt><dd>只替换墨桥写入的条目</dd>
         </dl>
+      </section>
+    </ConfirmModal>
+
+    <ConfirmModal :show="reloginConfirm" title="重新登录 AtomCode" ok-text="重新登录"
+      @close="reloginConfirm = false" @ok="doLogin">
+      <section class="confirm-sec">
+        <h4>已有登录凭据</h4>
+        <p>本机已登录{{ ac.account?.username ? '（' + ac.account.username + '）' : '' }}，重新登录会弹出终端窗口并覆盖现有授权。只想刷新目录的话，请用「刷新目录」。</p>
       </section>
     </ConfirmModal>
 
@@ -412,7 +540,7 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
         <dl class="confirm-grid">
           <dt>写入目标</dt><dd>{{ targetName }}</dd>
           <dt>目标文件</dt><dd class="mono">{{ targetPath }}</dd>
-          <dt>将移除条目</dt><dd>墨桥写入的 AtomCode 条目（OpenCode、日日新与你自己写的配置原样保留）</dd>
+          <dt>将移除条目</dt><dd>只移除墨桥写入的条目，你的配置不受影响</dd>
         </dl>
       </section>
     </ConfirmModal>
@@ -424,7 +552,7 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
             <h3>{{ detail.id }}</h3>
             <p class="mono">{{ detail.upstream }}</p>
           </div>
-          <button class="ac-detail-x" type="button" aria-label="关闭" @click="detail = null">×</button>
+          <NButton size="tiny" quaternary circle class="ac-detail-x" aria-label="关闭" @click="detail = null">×</NButton>
         </header>
         <dl class="ac-detail-grid">
           <dt>上下文</dt><dd>{{ detail.context ? contextText(detail.context) + '（' + detail.context + ' tokens）' : '—' }}</dd>
@@ -450,9 +578,19 @@ code { font-family: var(--mono); font-size: 11px; }
 .ac-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .ac-detail-head h3 { margin: 0; font-size: 15px; }
 .ac-detail-head p { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
-.ac-detail-x { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.ac-detail-x { color: var(--muted); font-size: 15px; }
 .ac-detail-grid { display: grid; grid-template-columns: 84px 1fr; gap: 8px 12px; margin: 14px 0 0; font-size: 12px; }
 .ac-detail-grid dt { color: var(--muted); }
 .ac-detail-grid dd { margin: 0; }
 .ac-detail-foot { margin: 14px 0 0; font-size: 11px; color: var(--disabled-text); }
+
+/* 可用性校验：被上游拒绝的模型整行压暗并贴"不可用"签，勾选框一并禁用。 */
+.probe-note { margin: 10px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
+.cell-reason { margin: 3px 0 0; font-size: 10.5px; line-height: 1.5; color: var(--error-dot); overflow-wrap: anywhere; }
+.tag-bad {
+  margin-left: 6px; padding: 0 5px; border-radius: 4px; vertical-align: 1px;
+  font-size: 10px; font-weight: 650; line-height: 15px; display: inline-block;
+  background: var(--error-dot); color: #fff;
+}
+tr.rejected .cell-name, tr.rejected .cell-sub { opacity: .55; }
 </style>

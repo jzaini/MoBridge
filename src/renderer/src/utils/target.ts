@@ -6,6 +6,8 @@ import type { ServiceState, SyncState, TargetInspection } from '@shared/types'
 export function targetLabel(kind?: string): string {
   if (kind === 'dsh') return 'DSH'
   if (kind === 'mofang') return '墨坊'
+  if (kind === 'qoder') return 'Qoder'
+  if (kind === 'trae') return 'Trae'
   return 'WorkBuddy'
 }
 
@@ -22,6 +24,16 @@ export function targetPathOf(state: ServiceState): string {
     if (!mofang.exists) return '未找到墨坊配置；请先启动一次墨坊（预期 ' + (mofang.home || '~/.mofang') + '/config.json）'
     return mofang.file || (mofang.home || '~') + '/config.json'
   }
+  if (state.target === 'qoder') {
+    const qoder = (state.qoder || {}) as { home?: string; file?: string | null; exists?: boolean }
+    if (!qoder.exists) return '未找到 Qoder 设置；请先启动一次 Qoder（预期 ~/.qoder-cn/settings.json）'
+    return qoder.file || (qoder.home || '~') + '/settings.json'
+  }
+  if (state.target === 'trae') {
+    const trae = (state.trae || {}) as { home?: string; file?: string | null; exists?: boolean; running?: boolean }
+    if (!trae.exists) return '未找到 Trae 数据库；请先启动一次 Trae CN（预期 %APPDATA%/Trae CN）'
+    return trae.file || (trae.home || '') + '/User/globalStorage/state.vscdb'
+  }
   return state.modelsFile || '尚未定位配置文件，导入时查找或选择'
 }
 
@@ -29,6 +41,8 @@ export function targetPathOf(state: ServiceState): string {
 export function writeLabelOf(state: ServiceState): string {
   if (state.target === 'dsh') return '写入 DSH'
   if (state.target === 'mofang') return '写入墨坊'
+  if (state.target === 'qoder') return '写入 Qoder'
+  if (state.target === 'trae') return '写入 Trae'
   return '写入 WorkBuddy'
 }
 
@@ -37,7 +51,11 @@ export function writeLabelOf(state: ServiceState): string {
  * 页面所有「能不能移除 / 能不能写」的判断都读这一份，避免各页各算一套。
  */
 export function inspectionOf(state: ServiceState): TargetInspection | undefined {
-  const kind = state.target === 'dsh' ? 'dsh' : state.target === 'mofang' ? 'mofang' : 'workbuddy'
+  const kind = state.target === 'dsh' ? 'dsh'
+    : state.target === 'mofang' ? 'mofang'
+    : state.target === 'qoder' ? 'qoder'
+    : state.target === 'trae' ? 'trae'
+    : 'workbuddy'
   return state.targets?.[kind]
 }
 

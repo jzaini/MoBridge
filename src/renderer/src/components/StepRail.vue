@@ -1,12 +1,16 @@
 <template>
+  <!-- 左侧步骤栏：全程可见的导航锚点。曾短暂改成页头下的横向条，
+       但横条占掉首屏黄金区，用户要求放回左侧；展示力度已增强——
+       节点永远显示序号、颜色表状态（绿底=完成、蓝底=当前 + 高亮环）、可收起。 -->
   <nav class="rail" :data-collapsed="collapsed === true" aria-label="接入步骤">
     <div class="rail-head">
       <template v-if="!collapsed">
-        <span class="rail-title">接入步骤</span>
-        <span class="rail-pos">{{ positionText() }}</span>
+        <span class="rail-title">步骤 {{ index() + 1 }}/{{ steps.length }}</span>
       </template>
-      <button class="rail-toggle" type="button" :title="collapsed ? '展开接入步骤' : '收起接入步骤'"
-        :aria-expanded="collapsed !== true" @click="emit('toggle')">{{ collapsed ? '»' : '«' }}</button>
+      <span v-else class="rail-pos" :title="'第 ' + Math.max(1, index() + 1) + ' / ' + steps.length + ' 步'">{{ index() + 1 }}/{{ steps.length }}</span>
+      <NButton size="tiny" quaternary circle class="rail-toggle"
+        :title="collapsed ? '展开接入步骤' : '收起接入步骤'"
+        :aria-expanded="collapsed !== true" @click="emit('toggle')">{{ collapsed ? '»' : '«' }}</NButton>
     </div>
     <ol class="rail-list">
       <li v-for="(step, i) in steps" :key="step.key" class="rail-item" :data-state="step.state" :data-active="step.key === active">
@@ -14,7 +18,7 @@
           :aria-current="step.key === active ? 'step' : undefined"
           :title="step.label + (step.hint ? ' · ' + step.hint : '')"
           @click="emit('update:active', step.key)">
-          <span class="rail-no" aria-hidden="true">{{ step.state === 'done' ? '✓' : step.state === 'error' ? '!' : i + 1 }}</span>
+          <span class="rail-no" aria-hidden="true">{{ step.state === 'error' ? '!' : i + 1 }}</span>
           <span v-if="!collapsed" class="rail-copy">
             <b>{{ step.label }}</b>
             <small v-if="step.hint">{{ step.hint }}</small>
@@ -29,14 +33,16 @@
 </template>
 
 <script setup lang="ts">
-// 竖向步骤栏：左侧占满整列。
+// 左侧步骤栏（可收起）。
 // 「已完成的步骤」可以回看，未到达的步骤点不动——避免用户跳过前置条件直接看后面的空页面。
-//
-// 可收起：收起后只剩一列序号（44px 宽），把横向空间让给模型表。
-// 收起状态由页面持有并持久化（见 composables/useRail），切页签也保持一致。
+import { NButton } from 'naive-ui'
 import type { RailStep } from '../utils/steps'
 
-const props = defineProps<{ steps: RailStep[], active: string, collapsed?: boolean }>()
+const props = withDefaults(defineProps<{
+  steps: RailStep[]
+  active: string
+  collapsed?: boolean
+}>(), { collapsed: false })
 const emit = defineEmits<{
   (e: 'update:active', key: string): void
   (e: 'toggle'): void
@@ -44,7 +50,6 @@ const emit = defineEmits<{
 
 function reachable(step: RailStep): boolean { return step.state !== 'todo' }
 const index = () => props.steps.findIndex(step => step.key === props.active)
-const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.length} 步`
 </script>
 
 <style scoped>
@@ -53,10 +58,10 @@ const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.leng
 .rail-title { font-size: 11px; font-weight: 650; letter-spacing: .04em; color: var(--muted); text-transform: uppercase; }
 .rail-pos { font-size: 11px; color: var(--disabled-text); }
 .rail-toggle {
-  margin-left: auto; border: 0; background: transparent; color: var(--disabled-text);
-  font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 5px; cursor: pointer;
+  margin-left: auto; color: var(--disabled-text);
+  font-size: 12px;
 }
-.rail-toggle:hover { background: var(--hover); color: var(--text); }
+.rail-toggle:hover { color: var(--text); }
 .rail-list { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; }
 
 .rail-item { position: relative; padding-bottom: 10px; }
@@ -94,6 +99,9 @@ const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.leng
 
 .rail-item[data-active="true"] .rail-btn { background: var(--selected); border-color: color-mix(in srgb, var(--accent) 32%, transparent); }
 .rail-item[data-active="true"] .rail-copy b { color: var(--accent-text); }
+/* 「第 X/X 步」说当前在哪一步，节点也要呼应：当前步骤的圆点加一圈高亮环，
+   否则两步都完成后全是绿底数字，看不出当前停在哪。 */
+.rail-item[data-active="true"] .rail-no { box-shadow: 0 0 0 3px var(--selected); }
 
 .rail-foot {
   flex: 0 0 auto; margin-top: auto; padding-top: 9px;
@@ -104,5 +112,7 @@ const positionText = () => `第 ${Math.max(1, index() + 1)} / ${props.steps.leng
 /* 收起态：只剩序号列，圆点居中，连接线跟着居中 */
 .rail[data-collapsed="true"] .rail-btn { justify-content: center; padding: 3px 0; }
 .rail[data-collapsed="true"] .rail-item:not(:last-child)::after { left: 50%; transform: translateX(-50%); }
-.rail[data-collapsed="true"] .rail-head { justify-content: center; padding: 0; }
+.rail[data-collapsed="true"] .rail-head { flex-direction: column; align-items: center; gap: 4px; }
+.rail[data-collapsed="true"] .rail-toggle { margin-left: 0; }
+.rail[data-collapsed="true"] .rail-pos { font-size: 10px; color: var(--muted); }
 </style>

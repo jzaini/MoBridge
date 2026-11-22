@@ -1,31 +1,27 @@
 <template>
   <div class="plan" :class="{ 'rail-collapsed': railCollapsed }">
-    <!-- 左：步骤栏（占满整列高度，可收起） -->
+    <!-- 左：步骤栏（放回左侧：上方横条占首屏黄金区。展示力度已增强——节点显示序号、
+         当前步骤高亮环、绿底=完成） -->
     <div class="plan-rail">
       <StepRail v-model:active="active" :steps="rail" :collapsed="railCollapsed" @toggle="toggleRail">
         <template #foot>
-          检测只发极小请求，不会消耗对话额度；不可用模型只在本次会话保留，不写入客户端。
+          检测只发极小请求，不消耗对话额度。
         </template>
       </StepRail>
     </div>
 
     <!-- 中：当前步骤 -->
     <div class="plan-main">
-      <header class="stage-head">
+      <!-- 页头只在第 1 步显示：第 2 步的标题并入卡片、按钮并入表格工具行，
+           去掉重复展示，内容区整体上移。 -->
+      <header v-if="active === 'connect'" class="stage-head">
         <div class="stage-title">
-          <h2>{{ active === 'connect' ? '连接模型服务' : '检测并挑选模型' }}</h2>
+          <h2>连接模型服务</h2>
           <p class="stage-sub">{{ caption }}</p>
         </div>
         <div class="stage-actions">
-          <template v-if="active === 'connect'">
-            <NButton size="small" :disabled="busy" title="查看连接、写入记录与说明等环境明细" @click="envShow = true">环境信息</NButton>
-            <NButton v-if="st.phase === 'error' || st.phase === 'stopped'" size="small" type="warning" :disabled="opBusy" title="服务出错或停止时重新启动隔离模型服务" @click="runAction('restart')">重启服务</NButton>
-          </template>
-          <template v-else>
-            <NButton size="small" :disabled="busy" title="重新读取 OpenCode 免费模型目录（只刷新清单，不影响当前步骤）" @click="runAction('refresh')">刷新目录</NButton>
-            <NButton size="small" type="primary" :disabled="busy" title="向每个模型发极小请求，得到真实可用性与耗时" @click="runAction('probe')">检测全部</NButton>
-            <NButton size="small" :disabled="busy" title="只检测当前勾选的可用模型，更省额度" @click="doProbeSelected">检测选中</NButton>
-          </template>
+          <NButton size="small" :disabled="busy" title="查看连接、写入记录与说明等环境明细" @click="envShow = true">环境信息</NButton>
+          <NButton v-if="st.phase === 'error' || st.phase === 'stopped'" size="small" type="warning" :disabled="opBusy" title="服务出错或停止时重新启动隔离模型服务" @click="runAction('restart')">重启服务</NButton>
         </div>
       </header>
 
@@ -33,18 +29,18 @@
       <section v-if="active === 'connect'" class="pane" aria-label="连接服务">
         <div class="pane-head">
           <h3>隔离模型服务</h3>
-          <p>墨桥在本机起一个独立的模型服务，页面通过它与上游对话。这里只关心它有没有起来、跑在哪个地址。</p>
+          <p>墨桥在本机启动一个独立的模型服务，这里看它有没有起来、地址是多少。</p>
         </div>
         <div class="pane-body">
           <StatusPanel :state="st" @open-env="envShow = true" />
           <h4 class="sec-title">这一步在看什么</h4>
           <ul class="review-list guide">
-            <li><b>阶段/版本</b>：隔离模型服务有没有起来、跑的是哪个版本。</li>
-            <li><b>转发口</b>：客户端以后要连的本机地址——不是上游地址，凭据不落到客户端。</li>
-            <li><b>上次同步</b>：上一次写入的目标、模型数量与时间。</li>
+            <li><b>阶段/版本</b>：服务有没有起来、是什么版本。</li>
+            <li><b>转发口</b>：客户端要填的本机地址。</li>
+            <li><b>上次同步</b>：最近一次写入的记录。</li>
           </ul>
           <p class="legend">
-            服务未就绪时，检测与写入都会不可用。若一直停在「启动中」，点右上「重启服务」或看「环境信息」里的日志位置。
+            服务没就绪时不能检测和写入；一直停在「启动中」就点「重启服务」。
           </p>
         </div>
       </section>
@@ -53,58 +49,55 @@
       <section v-else class="pane table-pane" aria-label="检测并挑选模型">
         <div class="pane-head with-stats">
           <div>
-            <h3>免费模型清单</h3>
-            <p>{{ tableHint }}</p>
+            <h3>检测并挑选模型</h3>
+            <p>把 <span class="desc-tag">OpenCode</span> 的免费模型接进 <span class="desc-tag">{{ targetName() }}</span>。<br>{{ tableHint }}</p>
           </div>
           <!-- 三个数字挤成一条：原来是大号指标单起一行，把表格往下压了一整行。 -->
           <div class="stat-strip" role="group" aria-label="模型统计">
             <div class="stat"><span class="stat-v">{{ metricModels }}</span><span class="stat-k">模型</span></div>
             <div class="stat"><span class="stat-v" :class="metricAvailable ? 'ok' : 'na'">{{ metricAvailable }}</span><span class="stat-k">可用</span></div>
-            <div class="stat"><span class="stat-v">{{ metricContext }}</span><span class="stat-k">最大上下文</span></div>
           </div>
         </div>
 
         <div v-if="showFailureDiag" class="diag">
           <b>{{ allModels.length }} 个模型全部不可用</b>
-          <p>检测是向每个模型真实发一次极小请求，下面的结论来自上游返回，相同原因已合并：</p>
+          <p>向每个模型发了测试请求，相同原因已合并：</p>
           <ul class="diag-list">
             <li v-for="group in failureGroups" :key="group.reason">{{ group.count }} 个 · <code>{{ group.reason }}</code></li>
           </ul>
           <p class="diag-foot">
-            出现「Free usage exceeded」「quota」这类字样表示上游免费额度此刻已用尽，不是本机配置写错了；
-            换个时间段点「检测全部」重试即可。检测只发极小请求。
+            「Free usage exceeded / quota」是免费额度用完了，不是配置问题，过段时间再检测即可。
           </p>
         </div>
 
-        <div class="pane-toolbar">
-          <label class="check-inline">
-            <NCheckbox size="small" :checked="allChecked" :indeterminate="allIndeterminate"
-              :disabled="opBusy || !visibleEnabled.length"
-              aria-label="全选或取消全选当前可见可用模型"
-              @update:checked="onSelectAll" />
-            <span>全选</span>
-          </label>
-          <NButton size="tiny" :disabled="opBusy || !availableModels.length" title="只勾选检测结果为「可用」的模型" @click="bulkSelect('available')">只勾选可用</NButton>
-          <label class="check-inline" title="只展示检测可用的模型；关闭后展示全部模型">
-            <NCheckbox size="small" :checked="onlyUsable" @update:checked="setOnlyUsable" />
-            <span>只看可用</span>
-          </label>
-          <div class="toolbar-right">
-            <span class="sel-strong">{{ selectionSummary }}</span>
-            <span class="toolbar-hint">{{ filterHint }}</span>
-          </div>
-        </div>
+        <!-- 未安装 OpenCode 运行时的引导：安装是首次检测时自动完成的，这里只负责说清楚。 -->
+        <p v-if="active === 'probe' && !runtimeInstalled" class="runtime-note">
+          尚未安装 OpenCode 运行时，首次检测时会自动下载（可能需要几分钟）。
+        </p>
+        <TableToolbar :checked="allChecked" :indeterminate="allIndeterminate"
+          :check-all-disabled="opBusy || !visibleEnabled.length"
+          :usable-count="availableModels.length" :usable-disabled="opBusy || !availableModels.length"
+          :image-usable-count="imageUsable.length"
+          :cancel-disabled="opBusy || !checkedIds.length"
+          v-model:only-usable="onlyUsable"
+          :selected-count="checkedIds.length"
+          @check-all="onSelectAll" @select-usable="bulkSelect('available')" @select-image="bulkSelect('image')" @select-none="bulkSelect('none')">
+          <template #actions>
+            <NButton size="tiny" :disabled="busy" title="重新读取免费模型目录" @click="runAction('refresh')">刷新 OC 目录</NButton>
+            <NButton size="tiny" type="primary" :disabled="busy" title="逐个测试模型可用性" @click="runAction('probe')">检测 OC 全部</NButton>
+            <NButton size="tiny" :disabled="busy" title="只检测勾选的模型" @click="doProbeSelected">检测 OC 选中</NButton>
+          </template>
+        </TableToolbar>
         <div class="table-scroll" tabindex="0" role="region" aria-label="OpenCode 免费模型清单">
-          <ModelTable :models="modelRows" :model-results="modelResults" :available-models="availableModels"
+          <ModelTable :models="modelRows" source-prefix="OC · " :model-results="modelResults" :available-models="availableModels"
             :excluded-models="excludedModels" :probe="probe" :activity="activity" :busy="opBusy" :empty-text="emptyText"
             @select="onSelect" @probe-one="onProbeOne" @detail="onDetail" />
         </div>
-        <p class="legend">勾选即"要写入"；「—」表示 OpenCode 未公开该模型的上下文窗口数值，页面不编造，写入客户端时使用保守默认值。主行是写入客户端后的名字，<code>OC · / AC · / SN ·</code> 是三路来源前缀，防止同名模型互相覆盖。选好之后在右侧「写入配置」里按目标写入。</p>
+        <p class="legend">勾选 = 要写入；「—」表示官方未公开该数值。选好后点右侧「写入配置」。</p>
       </section>
 
       <footer class="page-foot">
-        <span>接口与配置仅存本机；免费模型来自 OpenCode 官方目录静态快照</span>
-        <span>耗时为完整请求用时</span>
+        <span>配置仅存本机 · 耗时为完整请求用时</span>
       </footer>
     </div>
 
@@ -130,9 +123,12 @@
 
       <!-- 写入只在"检测并挑选模型"这一步出现：第 1 步还没模型可写，
            摆一个全是禁用原因的按钮只是噪音。 -->
-      <WriteCard v-if="active === 'probe'" :target-name="targetName()" :write-label="writeLabel" :count="checkedIds.length"
+      <!-- 切到 Trae 时引导卡不受步骤限制：guide 是 Trae 接入的唯一出口，第 1 步也要能看到 -->
+      <WriteCard v-if="active === 'probe' || state.target === 'trae'" :target-name="targetName()" :write-label="writeLabel" :count="checkedIds.length"
         :write-disabled="busy || !canWrite" :write-reason="writeReason"
         :remove-disabled="busy || !canRemove" :remove-reason="removeReason" :preview="previewNames"
+        :guide="state.target === 'trae' ? { address: (state.endpoint || '') + '/chat/completions', keyAction: 'copy-bridge-key', models: checkedIds } : null"
+        :meta="Object.fromEntries((state.models || []).map((m: any) => [m.id, { context: m.context ?? null, images: m.images === true, levels: m.levels || [] }]))"
         @write="writeConfirm = true" @remove="removeConfirm = true" />
     </div>
 
@@ -142,12 +138,12 @@
         <dl class="confirm-grid">
           <dt>写入目标</dt><dd>{{ targetName() }}</dd>
           <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
-          <dt>将写入模型</dt><dd>{{ checkedIds.length }} 个（当前已选的可用模型）</dd>
-          <dt>写入方式</dt><dd>带 owner 标记的覆盖式同步，只替换本插件写入的条目</dd>
+          <dt>将写入模型</dt><dd>{{ checkedIds.length }} 个（已勾选）</dd>
+          <dt>写入方式</dt><dd>只替换墨桥写入的条目</dd>
         </dl>
         <p class="confirm-note">{{ checkedIds.length
-          ? '确认后会把 ' + checkedIds.length + ' 个可用模型写入 ' + targetName() + '，完成后会有浮层提示。'
-          : '当前没有勾选任何可用模型，写入将清空本插件在 ' + targetName() + ' 的条目，不会动其它工具的配置。' }}</p>
+          ? '确认后把 ' + checkedIds.length + ' 个模型写入 ' + targetName() + '。'
+          : '没有勾选任何模型，写入将清空墨桥在 ' + targetName() + ' 的条目。' }}</p>
       </section>
     </ConfirmModal>
 
@@ -157,10 +153,10 @@
         <dl class="confirm-grid">
           <dt>写入目标</dt><dd>{{ targetName() }}</dd>
           <dt>目标文件</dt><dd class="mono">{{ targetPath() }}</dd>
-          <dt>将移除条目</dt><dd>{{ owned }} 个 · 仅 OpenCode 接入写入的条目（AtomCode、日日新与你自己写的配置原样保留）</dd>
-          <dt>本机数据</dt><dd>API Key 与勾选记录不受影响，可随时重新写入</dd>
+          <dt>将移除条目</dt><dd>{{ owned }} 个 · 只移除墨桥写入的条目，你的配置不受影响</dd>
+          <dt>本机数据</dt><dd>Key 与勾选记录保留，随时可重新写入</dd>
         </dl>
-        <p class="confirm-note">移除后，{{ targetName() }} 里由 OpenCode 接入写入的模型将不可用。</p>
+        <p class="confirm-note">移除后这些模型在 {{ targetName() }} 里不可用，重新写入即可恢复。</p>
       </section>
     </ConfirmModal>
 
@@ -192,6 +188,7 @@ import ConfigCard, { type InfoRow } from '../components/ConfigCard.vue'
 import WriteCard from '../components/WriteCard.vue'
 import StatusPanel from '../components/StatusPanel.vue'
 import ModelTable from '../components/ModelTable.vue'
+import TableToolbar from '../components/TableToolbar.vue'
 import EnvModal from '../components/EnvModal.vue'
 import DetailModal from '../components/DetailModal.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
@@ -238,12 +235,15 @@ function loadOnlyUsable(): boolean {
   try { const saved = localStorage.getItem(ONLY_KEY); return saved === null ? true : saved !== '0' } catch { return true }
 }
 const onlyUsable = ref(loadOnlyUsable())
-function setOnlyUsable(v: boolean) {
-  onlyUsable.value = v
-  try { localStorage.setItem(ONLY_KEY, v ? '1' : '0') } catch { /* 隐私模式忽略 */ }
-}
+// 「只看可用」的开关现在由共用工具栏 v-model 直改 ref；持久化交给 watch。
+watch(onlyUsable, v => { try { localStorage.setItem(ONLY_KEY, v ? '1' : '0') } catch { /* 隐私模式忽略 */ } })
 
-const allModels = computed(() => (state.value.models || []) as unknown as Array<{ id: string, name?: string, context?: number }>)
+const allModels = computed(() => (state.value.models || []) as unknown as Array<{ id: string, name?: string, context?: number, images?: boolean }>)
+// 识图能力来自 OpenCode 目录（capabilities.input.image），与表格能力列的「识图」标签同一来源；
+// chatOnly 是探测时的"仅对话"降级标志，跟识图无关——之前误用它当过滤条件，
+// 导致「只勾选识图」永远等于「只勾选可用」（chatOnly 绝大多数为 false），勾上一堆纯文本模型。
+const imageCapable = computed(() => new Set(allModels.value.filter(m => m.images === true).map(m => m.id)))
+const imageUsable = computed(() => availableModels.value.filter(id => imageCapable.value.has(id)))
 const visibleInfo = computed(() => {
   const models = [...allModels.value]
     .sort((a, b) => rank(a) - rank(b) || String(a.name || '').localeCompare(String(b.name || '')))
@@ -263,6 +263,9 @@ const activity = computed(() => (state.value.activity || []) as Array<Record<str
 
 // ── 写入目标体检 / 按钮门控 ───────────────────────────────────────────────
 const inspection = computed(() => inspectionOf(state.value))
+// OpenCode 运行时是否已安装：boot 只做本地探测（懒加载），没装也能就绪——
+// 但要在页面上说清楚"没装 + 检测时会自动下载"，否则用户不知道差这一步（对齐 AtomCode 的安装引导）。
+const runtimeInstalled = computed(() => !!st.value.opencodeVersion)
 // 同一个目标里三条接入线共写一份配置，条目数要按线取，不能拿合计值当自己的账。
 const slice = computed(() => sourceSliceOf(inspection.value, 'opencode'))
 const owned = computed(() => slice.value.count)
@@ -314,9 +317,11 @@ const rail = computed<RailStep[]>(() => [
   {
     key: 'probe',
     label: '检测并挑选模型',
-    hint: availableModels.value.length
-      ? availableModels.value.length + ' / ' + allModels.value.length + ' 个可用'
-      : (allModels.value.length ? allModels.value.length + ' 个模型待检测' : '向每个模型发一次极小请求'),
+    hint: state.value.target === 'trae'
+      ? '引导式接入：按右侧参数在 Trae 里添加'
+      : (availableModels.value.length
+        ? availableModels.value.length + ' / ' + allModels.value.length + ' 个可用'
+        : (allModels.value.length ? allModels.value.length + ' 个模型待检测' : '向每个模型发一次极小请求')),
     state: availableModels.value.length ? 'done' : connectDone.value ? 'current' : 'todo',
   },
 ])
@@ -329,10 +334,6 @@ const busy = computed(() => controlsBusy())
 const opBusy = computed(() => operationBusy())
 const metricModels = computed(() => allModels.value.length)
 const metricAvailable = computed(() => availableModels.value.length)
-const metricContext = computed(() => {
-  const largest = allModels.value.reduce((m, x) => Math.max(m, Number(x.context) || 0), 0)
-  return largest ? formatContext(largest) : '—'
-})
 const caption = computed(() => '把 OpenCode 的免费模型接进 ' + targetName())
 const writeLabel = computed(() => writeLabelOf(state.value))
 const tableHint = computed(() => (state.value.phase === 'reading'
@@ -345,14 +346,6 @@ const visibleEnabled = computed(() => visibleInfo.value.models.filter(m => avail
 const visibleChosen = computed(() => visibleEnabled.value.filter(m => !excludedModels.value.includes(m.id)).length)
 const allChecked = computed(() => visibleEnabled.value.length > 0 && visibleChosen.value === visibleEnabled.value.length)
 const allIndeterminate = computed(() => visibleChosen.value > 0 && visibleChosen.value < visibleEnabled.value.length)
-// 可用数已在表头统计条出现过（一处事实只说一遍），底部只报勾选进度，不再复读「可用 N」。
-const selectionSummary = computed(() => '已选 ' + checkedIds.value.length + ' 个')
-const filterHint = computed(() => {
-  const info = visibleInfo.value
-  return info.active
-    ? '当前只显示 ' + info.models.length + ' 个可用模型，关闭「只看可用」查看全部 ' + info.total + ' 个'
-    : (onlyUsable.value ? '还没有检测出可用模型，暂显示全部 ' + info.total + ' 个' : '已显示全部 ' + info.total + ' 个模型')
-})
 const emptyText = computed(() => {
   const s = state.value
   if (s.phase === 'error') return '模型服务暂不可用，请点「重启服务」。'
@@ -397,7 +390,9 @@ function feedbackFor(name: string, result: Record<string, any>, value?: unknown)
     else if (result.changed === false) note(targetName(result.target) + ' 配置已是最新，共 ' + (result.count ?? 0) + ' 个模型。', 'ok')
     else note('写入完成，已将 ' + (result.count ?? 0) + ' 个可用模型写入 ' + targetName(result.target) + '。', 'ok')
   } else if (name === 'target') {
-    note('已切换到 ' + targetName(result.target) + (result.count ? '，写入 ' + result.count + ' 个可用模型。' : '，当前没有勾选可用模型。'), 'ok')
+    note('已切换到 ' + targetName(result.target) + (result.migrated === false
+      ? '（未改动旧目标配置；要写入请点「写入配置」，要摘除旧目标条目请用「移除配置」）。'
+      : result.count ? '，写入 ' + result.count + ' 个可用模型。' : '，当前没有勾选可用模型。'), 'ok')
   } else if (name === 'refresh') note('已重新读取 OpenCode 免费模型目录。', 'ok')
   else if (name === 'probe') note('检测完成，结果已更新。', 'ok')
   else if (name === 'restart') note('已重新启动隔离模型服务。', 'ok')
@@ -409,7 +404,7 @@ async function runAction(name: string, value?: unknown) {
   const prev = { target: state.value.target, useSystemProxy: state.value.useSystemProxy, excludedModels: state.value.excludedModels }
   // 乐观更新：先让控件即时反映，再等动作结果与下一次 state 推送校正
   if (name === 'system-proxy') state.value.useSystemProxy = value === true
-  if (name === 'target') state.value.target = value as 'workbuddy' | 'dsh' | 'mofang'
+  if (name === 'target') state.value.target = value as 'workbuddy' | 'dsh' | 'mofang' | 'qoder' | 'trae'
   try {
     // run() 现在会把"为什么不能做"当错误返回（而不是静默 return），
     // 于是下面的 catch 一定能把原因弹出来——点下去不再毫无反应。
@@ -428,7 +423,7 @@ async function runAction(name: string, value?: unknown) {
   }
 }
 
-function switchTarget(v: 'workbuddy' | 'dsh' | 'mofang') {
+function switchTarget(v: 'workbuddy' | 'dsh' | 'mofang' | 'qoder' | 'trae') {
   // 点当前目标是无意义操作：不调服务、不弹提示（原来会弹一句「已经是当前写入目标」，纯噪音）。
   if (v === state.value.target) return
   void runAction('target', v)
@@ -461,14 +456,20 @@ async function doProbeSelected() {
   }
 }
 
-// ── 全选 / 只勾选可用：selection 动作是单模型 {model, selected}，按需逐条 reconcile ──
-async function bulkSelect(mode: 'all' | 'available') {
+// ── 全选 / 只勾选可用 / 只勾选识图 / 全部取消：selection 动作是单模型 {model, selected}，按需逐条 reconcile ──
+async function bulkSelect(mode: 'all' | 'available' | 'image' | 'none') {
   if (operationBusy()) { note('有操作正在进行，请稍候（进度见窗口底部）。', 'error'); return }
   const available = availableModels.value
   const checkedNow = new Set(checkedIds.value)
   let desired: Set<string>
   if (mode === 'available') {
     desired = new Set(available)                       // 只勾选可用 = 全部可用都勾上
+  } else if (mode === 'image') {
+    // 只勾选识图：可用且目录声明支持图片输入（capabilities.input.image）——
+    // 与表格能力列的「识图」标签同一口径；chatOnly 是探测降级标志，与识图无关。
+    desired = new Set(available.filter(id => imageCapable.value.has(id)))
+  } else if (mode === 'none') {
+    desired = new Set()                                // 全部取消 = 清空所有勾选
   } else {
     const visible = visibleInfo.value.models.filter(m => available.includes(m.id)).map(m => m.id)
     const everythingChecked = visible.length > 0 && visible.every(id => checkedNow.has(id))
@@ -532,8 +533,6 @@ function onDetail(m: ModelRow) { detailModel.value = m }
 </script>
 
 <style scoped>
-.check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-.sel-strong { color: var(--text); font-weight: 650; }
 .proxy-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
 .tc-extra-hint { margin: 0; font-size: 10.5px; color: var(--disabled-text); }
 </style>
