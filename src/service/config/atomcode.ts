@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 // AtomCode（AtomGit CodingPlan）本机侧事实：装没装、登没登、网关在哪、勾了哪些。
 //
@@ -45,6 +46,24 @@ function binaryCandidates({ env = process.env, home = os.homedir(), platform = p
   return [...new Set(list.filter(Boolean) as string[])];
 }
 
+/**
+ * AtomCode CLI 是 node 程序：系统 PATH 里若是老 node（如 14），--version/login/daemon
+ * 都会启动极慢甚至直接失败（用户实测）。WorkBuddy 自带 node 22
+ * （~/.workbuddy/binaries/node/versions/<v>/），找到就把它的目录前置到 PATH——
+ * CLI 子进程继承这个 env，自动用上 node 22；没有就原样用系统环境。
+ */
+export function preferredNodeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  try {
+    const root = path.join(os.homedir(), '.workbuddy', 'binaries', 'node', 'versions');
+    const dir = fsSync.readdirSync(root)
+      .filter(name => /^22\./.test(name))
+      .sort()
+      .reverse()[0];
+    if (dir) return { ...base, PATH: path.join(root, dir) + path.delimiter + (base.PATH ?? '') };
+  } catch { /* 没有 WorkBuddy 自带 node 就用系统的 */ }
+  return base;
+}
+
 function run(file: string, args: string[], timeoutMs: number) {
   return new Promise<{ ok: boolean, code: number | null, output: string }>(resolve => {
     let output = '', settled = false;
@@ -55,7 +74,7 @@ function run(file: string, args: string[], timeoutMs: number) {
       resolve({ ok, code, output: (output + (extra ? '\n' + extra : '')).slice(-8000) });
     };
     let child;
-    try { child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: preferredNodeEnv() }); }
     catch (error) { resolve({ ok: false, code: null, output: (error as Error).message }); return; }
     const timer = setTimeout(() => { try { child.kill(); } catch { /* 已经退出 */ } finish(false, null, '命令超时，已中止'); }, timeoutMs);
     child.stdout?.on('data', chunk => { output += chunk.toString(); });
@@ -99,10 +118,40 @@ export async function runInstall(platform = process.platform) {
   return run(shell, args, 300000);
 }
 
-/** 拉起浏览器 OAuth。二进制路径来自本机探测，不是用户输入。 */
+/** 无头直跑 `atomcode login`。没有 TTY 时 CLI 会拒绝进交互模式——现在只作弹窗失败后的兜底。 */
 export async function runLogin(binary: string | null) {
   if (!binary) return { ok: false, code: null, output: '未找到 atomcode，请先安装' };
   return run(binary, ['login'], 180000);
+}
+
+/**
+ * 弹一个可见终端窗口跑 `atomcode login`：命令作为启动参数随窗口执行，不做按键模拟。
+ * 优先 Windows Terminal（WindowsApps 里的应用执行别名），没有就退回 `cmd /c start`；
+ * /k 让窗口执行完不关闭，用户能看到 CLI 的输出和报错。
+ * spawn 用 verbatim 参数：cmd 的引号规则和 Node 默认转义不一致，自己拼好引号反而可控。
+ * 窗口进程 detached + stdio ignore，独立于墨桥存活；terminal 字段让调用方知道走了哪条路。
+ */
+export async function openLoginTerminal(binary: string, { home = os.homedir(), platform = process.platform } = {}) {
+  if (platform !== 'win32') return { ok: false, terminal: null as string | null, error: '当前系统不支持弹出终端，回退后台执行' };
+  const env = preferredNodeEnv();
+  const local = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const commandLine = `"${binary}" login`;
+  const attempts: Array<{ terminal: string, file: string, args: string[] }> = [];
+  const wt = path.join(local, 'Microsoft', 'WindowsApps', 'wt.exe');
+  if (fsSync.existsSync(wt)) attempts.push({ terminal: 'Windows Terminal', file: wt, args: ['cmd', '/k', commandLine] });
+  attempts.push({ terminal: 'cmd', file: 'cmd.exe', args: ['/c', 'start', '"AtomCode 登录"', 'cmd', '/k', commandLine] });
+  for (const attempt of attempts) {
+    const spawned = await new Promise<boolean>(resolve => {
+      let child: ChildProcess;
+      try {
+        child = spawn(attempt.file, attempt.args, { detached: true, stdio: 'ignore', windowsHide: false, windowsVerbatimArguments: true, env });
+      } catch { resolve(false); return; }
+      child.once('error', () => resolve(false));
+      child.once('spawn', () => { child.unref(); resolve(true); });
+    });
+    if (spawned) return { ok: true, terminal: attempt.terminal, error: null as string | null };
+  }
+  return { ok: false, terminal: null as string | null, error: '没能弹出终端窗口，回退后台执行' };
 }
 
 // auth.toml 只有顶层标量，够拿到登录态；不做通用 TOML 解析。

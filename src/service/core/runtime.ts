@@ -223,6 +223,12 @@ export async function findRuntime(dataDir, updateStatus, options = {}) {
   }
   local.sort((a, b) => compareVersions(b.version, a.version));
   const best = local[0];
+  // 按需模式（boot 用）：只做本地探测，绝不打网络、绝不下载——
+  // 启动不该被 76 MB 的运行时下载阻塞，缺了就让真正用到它的动作再拉。
+  if (options.autoInstall === false) {
+    if (best) { log(`Using local OpenCode ${best.version}: ${best.file}`); return best.file; }
+    throw new Error('OpenCode 运行时未安装');
+  }
   let metadata;
   try { metadata = await readLatest(); }
   catch (e) {
