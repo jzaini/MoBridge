@@ -6,10 +6,12 @@
 //    EnsureEmptyDir 阶段失败——它要先把旧的 win-unpacked 整个删掉，而这个文件删不动。
 //    为什么不是「release-时间戳」并排一堆：那样项目根目录会被一堆同级目录铺满，
 //    产物应该收在一个文件夹里，时间戳只是它的子目录名。
-// 2) 默认 --config.win.signAndEditExecutable=false：跳过 rcedit，避免
-//    winCodeSign 解压时创建 macOS 符号链接需要特权。开启 Windows
-//    「开发人员模式」后，设 MOBRIDGE_KEEP_ICON=1 即可恢复 exe 自定义图标
-//    与版本元数据。
+// 2) 默认 --config.win.signAndEditExecutable=false：electron-builder 自带的 rcedit
+//    流程要先解压 winCodeSign 工具包，包里带 macOS 符号链接文件，Windows 普通用户
+//    没有「创建符号链接」特权，解压必失败（开「开发人员模式」或管理员运行才能过）。
+//    exe 图标改由 afterPack 钩子（scripts/embed-icon.cjs）用项目自带的 rcedit 直接嵌入
+//    ——普通的 exe 资源写入，不需要任何特权/模式。MOBRIDGE_KEEP_ICON=1 保留为兼容
+//    入口（让 electron-builder 自己跑完整 signAndEdit，需要符号链接特权）。
 // 3) 构建二进制走国内镜像，避免 electron-builder 直连 GitHub 超时。
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
@@ -52,8 +54,8 @@ const env = {
 
 console.log(`输出目录：${outDir}`)
 console.log(keepIcon
-  ? '模式：保留图标（需要 Windows 开发人员模式，否则 winCodeSign 可能失败）'
-  : '模式：跳过 rcedit（exe 无自定义图标；开开发人员模式后可用 MOBRIDGE_KEEP_ICON=1 恢复）')
+  ? '模式：electron-builder 完整 signAndEdit（需要符号链接特权：开发人员模式或管理员）'
+  : '模式：跳过 signAndEdit，exe 图标由 afterPack 钩子（embed-icon.cjs）嵌入，无需任何特权')
 
 const result = spawnSync(process.execPath, args, { stdio: 'inherit', env })
 if (result.error) {

@@ -9,4 +9,7 @@ package-lock.json
 .idea/
 .vscode/
 .workbuddy/
+# 接入工具的本地运行目录（会话/缓存），不进仓库
+.atomcode/
+.opencode/
 .DS_Store
