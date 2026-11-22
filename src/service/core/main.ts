@@ -2,12 +2,13 @@ import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { resolveModelsFile, validateModelsFile } from '../config/workbuddy-config.ts';
 import { searchConfig, windowsSearchRoots } from '../config/config-finder.ts';
 import { dataDirectory } from './platform.ts';
 import { findRuntime, startBackend } from './runtime.ts';
 import { createServer } from './server.ts';
+import { createLedgerHook } from './ledger-hook.ts';
 import { listenService } from './service-instance.ts';
 import { systemProxyEnvironment } from '../config/system-proxy.ts';
 import { prepare, BridgeError } from '../domain/protocol.ts';
@@ -16,6 +17,8 @@ import { modelResult, withRequestMeta, usableModelIds } from '../domain/model-st
 import { atomicWrite, syncModels, isOwnedEntry } from '../sync/sync.ts';
 import { syncDshProvider, listDshProfiles, locateDshHome, ownedProviderIds } from '../config/dsh-config.ts';
 import { syncMofangProvider, describeMofang, resolveMofangConfig } from '../config/mofang-config.ts';
+import { syncQoderProviders, describeQoder, resolveQoderConfig, providerKeyOf } from '../config/qoder-config.ts';
+import { syncTraeModels, describeTrae, resolveTraeState } from '../config/trae-config.ts';
 import {
   pickPathPatch, validateTargetPath, locateWorkbuddyFile, PATH_TARGET, TARGET_LABEL,
   type TargetKey, type PathKey,
@@ -31,14 +34,17 @@ import {
 import { validateKey as snValidate, probeAll as snProbeAll } from '../domain/sensenova.ts';
 import { createProbeCache } from '../domain/probe-cache.ts';
 import { normalizeSettings, pickKnownKeys } from '../domain/settings.ts';
+import { runWithConcurrency } from '../domain/pool.ts';
 import {
-  detectAtomcode, runInstall, runLogin, readAuth, accountInfo,
+  detectAtomcode, runInstall, runLogin, openLoginTerminal, readAuth, accountInfo,
   readGateway, saveGateway, installCommands, atomcodeHome,
   readSelection as acReadSelection, saveSelection as acSaveSelection,
   DEFAULT_PLAN_API as AC_PLAN_API, OFFICIAL_DOC as AC_DOC, OFFICIAL_SITE as AC_SITE,
 } from '../config/atomcode.ts';
-import { loadCatalog as acLoadCatalog, readOfflineModels as acReadOffline, clearCatalogCache as acClearCache } from '../domain/atomcode.ts';
+import { loadCatalog as acLoadCatalog, readOfflineModels as acReadOffline, clearCatalogCache as acClearCache, probePlanModels, wrappedUpstreamError } from '../domain/atomcode.ts';
 import { startAtomcodeBridge } from './atomcode-bridge.ts';
+import { startAtomcodeDaemon, daemonModels, daemonChat, buildDaemonCompletionMessage, parseDaemonReply, type DaemonRuntime } from './atomcode-daemon.ts';
+import { validateAction } from '../domain/handoff.ts';
 
 // 服务端进程：Electron 以 fork 方式拉起它，也可以直接 `npm start` 独立运行。
 // 它只监听 127.0.0.1，口令是一次一发的本地密钥，所有状态都写在数据目录里。
@@ -53,6 +59,8 @@ try { settings = JSON.parse(await fs.readFile(settingsFile, 'utf8')); } catch {}
 // 它是磁盘上真实的内容（还带着 target / excludedModels 这些）；serviceSettings 只装
 // 用户能在设置面板里改的那几个旋钮，读写都走 normalizer，不会被脏数据带偏。
 let serviceSettings = normalizeSettings(settings);
+// 墨镜账本上报器（T1.4）：isEnabled 走活回调——面板改 ledgerEnabled 即时生效，不用重启。
+const ledgerHook = createLedgerHook({ isEnabled: () => serviceSettings.ledgerEnabled !== false });
 const port = Number(process.env.MOBRIDGE_PORT || serviceSettings.port);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`Invalid MOBRIDGE_PORT: ${port}`);
 // AtomCode 转发口：两条链路协议不同，必须各占一个端口。
@@ -66,6 +74,9 @@ try { key = (await fs.readFile(tokenFile, 'utf8')).trim(); }
 catch (e) { if (e.code !== 'ENOENT') throw e; key = randomBytes(32).toString('hex'); await fs.writeFile(tokenFile, key, { flag: 'wx', mode: 0o600 }); }
 const endpoint = `http://127.0.0.1:${port}/v1`;
 let models = [], runtime, binary, stopping = false, refreshing;
+// 启动期解析的系统代理环境：OpenCode 运行时的按需下载（ensureRuntime）要复用，
+// 不能只在 boot 局部——否则运行时缺失时第一次下载拿不到代理配置。
+let startupProxyEnv: Record<string, string> | undefined;
 let previous = {};
 try { previous = JSON.parse(await fs.readFile(path.join(dataDir, 'status.json'), 'utf8')); } catch {}
 // 写入目标：WorkBuddy 的 models.json、DSH 各 profile 的 cordis.patch.yml，
@@ -85,12 +96,31 @@ const mofangAttachment = () => ({
   home: mofangInfo.home, file: mofangInfo.file, configFile: mofangInfo.configFile,
   providers: mofangInfo.providers, active: mofangInfo.active, exists: mofangInfo.exists,
 });
+// Qoder（BYOK 自定义模型在 settings.json 的 providers 键下，Key 是明文）：
+// 每次写入前重新定位一次，设置面板改过路径后立刻生效。
+const qoderOptions = () => ({ savedFile: settings.qoderConfigFile as string | undefined });
+let qoderInfo = await describeQoder(qoderOptions());
+const qoderAttachment = () => ({
+  home: qoderInfo.home, file: qoderInfo.file, exists: qoderInfo.exists,
+  providers: qoderInfo.providers, userProviders: qoderInfo.userProviders,
+});
+// Trae（模型清单在 state.vscdb 的 SQLite KV 里）：running 标记给页面用——
+// Trae 开着时写入会被它内存里的清单覆盖，服务层会直接拒绝并说清原因。
+const traeOptions = () => ({ savedFile: settings.traeStateFile as string | undefined });
+let traeInfo = await describeTrae(traeOptions());
+const traeAttachment = () => ({
+  home: traeInfo.home, file: traeInfo.file, exists: traeInfo.exists, running: traeInfo.running,
+});
 // 日日新：没有动态模型目录，也没有本机转发口——客户端直接连上游，用的是用户自己的 Key。
 // 所以这里只管三件事：Key 存哪、真实可用性怎么量、勾选写进哪个目标。
 let snKey = await snReadKey(dataDir);
 let snBase = await snReadApiBase(dataDir);
 let snSelection = await snReadSelection(dataDir) ?? snModels().map(model => model.upstream);
 let snValidation: Awaited<ReturnType<typeof snValidate>> & { time?: string } | null = null;
+// 上一轮的鉴权结论留在 status.json 里：Key 没变（掩码一致）就沿用，
+// 别让每次重启把「已通过」打成「未验证」。Key 变过就当没验过，等页面自动补验。
+if (previous.sensenova?.validated === true && previous.sensenova?.keyMask === snMaskKey(snKey))
+  snValidation = previous.sensenova.validation ?? null;
 let snProbeResults = {};
 let snLastWrite: { time: string, target: string, count: number, changed: boolean } | null = null;
 const snSnapshot = () => ({
@@ -109,23 +139,35 @@ let acCatalog = await acLoadCatalog(acAuth.values.access_token as string || null
 let acSelection = await acReadSelection(dataDir);
 let acGateway = await readGateway(dataDir);
 let acBridge: Awaited<ReturnType<typeof startAtomcodeBridge>> | null = null;
+// 托管 daemon（模块级：shutdown 要能停它）；模型清单随 daemon 生命周期缓存。
+let acDaemon: DaemonRuntime | null = null;
+let acDaemonModels: Awaited<ReturnType<typeof daemonModels>> | null = null;
 let acGate = { command: installCommands().command, official: AC_DOC };
 const acToken = () => (typeof acAuth.values.access_token === 'string' ? acAuth.values.access_token as string : null);
 const acModels = () => acCatalog.models;
 if (acSelection === null) acSelection = acModels().map(model => model.upstream);
+// 模型可用性探测（目录说可用 ≠ 网关真路由）：30 分钟缓存，强刷（登录/手动刷新）重测。
+const AC_PROBE_TTL_MS = 30 * 60 * 1000;
+let acModelProbe: Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }> = {};
+let acProbedAt = 0;
 const acSnapshot = () => ({
   installed: acFound.installed, version: acFound.version, binary: acFound.path,
   loggedIn: !!acToken() && acCatalog.source === 'live',
   account: accountInfo(acAuth.values, acAuth.mtimeMs),
   models: acModels().map(model => ({ id: model.id, upstream: model.upstream, name: model.name, context: model.context, images: model.images, levels: model.levels })),
   selection: acSelection,
+  probe: acModelProbe,
   catalogSource: acCatalog.source, plan: acCatalog.plan,
   fetchedAt: acCatalog.fetchedAt, catalogError: acCatalog.error, planAPI: AC_PLAN_API,
   gateway: acGateway.gateway, gatewayCustom: acGateway.custom,
   bridgeRunning: !!acBridge, endpoint: acBridge?.endpoint ?? null,
+  // 探测走了哪条路：daemon 挂了会降级网关探测。页面上据此提示"重新登录"，
+  // 不自动重登——atomcode login 必须弹终端走浏览器 OAuth，静默重试只会再弹一个黑窗。
+  probeVia: acLastProbeVia,
+  approvalMode: serviceSettings.atomcodeApprovalMode,
   install: acGate, loginCommand: 'atomcode login', docsUrl: AC_DOC, siteUrl: AC_SITE,
 });
-const target = ['workbuddy', 'dsh', 'mofang'].includes(settings.target) ? settings.target : 'workbuddy';
+const target = ['workbuddy', 'dsh', 'mofang', 'qoder', 'trae'].includes(settings.target) ? settings.target : 'workbuddy';
 // 状态里会带上一轮留下的检测结果：重启后面板不至于一片空白，但也不当成新结论。
 // ── 写入目标体检 ─────────────────────────────────────────────────────────
 // 三个目标各回答两个问题：① 这个客户端的配置在不在（能不能写）② 里面现在有没有我们的条目（能不能移除）。
@@ -195,7 +237,45 @@ async function inspectTargets() {
     ids: mofangIds,
     note: mofangInfo.exists ? null : '未检测到墨坊配置',
   };
+  // Qoder：settings.json 的 providers 里按 owner 标记认领（每路来源一条 provider）。
+  qoderInfo = await describeQoder(qoderOptions());
+  report.qoder = qoderReport(qoderInfo);
+  // Trae：state.vscdb 的模型清单按 owner 标记认领；Trae 在运行时体检照常（只读）。
+  traeInfo = await describeTrae(traeOptions());
+  report.trae = traeReport(traeInfo);
   return report;
+}
+// Qoder 体检的呈现：sources 直接来自 describeQoder（按 provider 内的 owner 分家）。
+function qoderReport(info) {
+  const sources = emptySourceCounts();
+  for (const [source, slice] of Object.entries(info.sources || {})) {
+    if (!sources[source]) continue;
+    sources[source].count = slice.count;
+    sources[source].ids = slice.ids;
+  }
+  return {
+    available: info.exists === true, file: info.file,
+    owned: info.ownedModels ?? 0,
+    sources,
+    ids: Object.values(info.sources || {}).flatMap(slice => slice.ids),
+    note: info.exists ? (info.error ?? null) : '未检测到 Qoder 设置（~/.qoder-cn/settings.json）',
+  };
+}
+// Trae 体检的呈现：sources 直接来自 describeTrae（按 display_name 去重）。
+function traeReport(info) {
+  const sources = emptySourceCounts();
+  for (const [source, slice] of Object.entries(info.sources || {})) {
+    if (!sources[source]) continue;
+    sources[source].count = slice.count;
+    sources[source].ids = slice.ids;
+  }
+  return {
+    available: info.exists === true, file: info.file,
+    owned: info.owned ?? 0,
+    sources,
+    ids: Object.values(info.sources || {}).flatMap(slice => slice.ids),
+    note: info.exists ? (info.error ?? null) : '未检测到 Trae 数据库（%APPDATA%/Trae CN）',
+  };
 }
 async function refreshTargets() {
   try {
@@ -204,7 +284,7 @@ async function refreshTargets() {
   } catch (error) { log.write(`${new Date().toISOString()} 目标体检失败：${error.message}\n`); }
 }
 
-let state = { useSystemProxy: settings.useSystemProxy === true || (process.platform === 'win32' && settings.useSystemProxy !== false), phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], excludedModels: settings.excludedModels || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false }, target, targets: {}, settings: serviceSettings, cacheEntries: 0, dsh: dshAttachment(), mofang: mofangAttachment(), sensenova: snSnapshot(), atomcode: acSnapshot() };
+let state = { useSystemProxy: settings.useSystemProxy === true || (process.platform === 'win32' && settings.useSystemProxy !== false), phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], excludedModels: settings.excludedModels || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false }, target, targets: {}, settings: serviceSettings, cacheEntries: 0, dsh: dshAttachment(), mofang: mofangAttachment(), qoder: qoderAttachment(), trae: traeAttachment(), sensenova: snSnapshot(), atomcode: acSnapshot() };
 // 状态写入串行化：一个慢的异步更新不能盖掉后发生的状态。
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -226,9 +306,9 @@ const probeCache = createProbeCache({
   log: message => log.write(`${new Date().toISOString()} ${message}\n`),
 });
 // 检测并发：串行等 11 个模型时，光两次超时就够等两分钟。并发跑让慢模型互相重叠，
-// 一轮基本只取决于最慢的那一批。上游对并发敏感，默认保守取 3。
-// 每次开队列时现读设置：用户把并发调小之后，下一轮就该按新的来。
-const probeConcurrency = () => Math.max(1, Math.min(6, Number(process.env.MOBRIDGE_PROBE_CONCURRENCY || serviceSettings.probeConcurrency) || 3));
+// 一轮基本只取决于最慢的那一批。每次开队列时现读设置：用户把并发调小之后，
+// 下一轮就该按新的来。
+const probeConcurrency = () => Math.max(1, Math.min(10, Number(process.env.MOBRIDGE_PROBE_CONCURRENCY || serviceSettings.probeConcurrency) || 6));
 // 只有"被检测通过"且"最近一次结果 ok"的模型才对外发布。
 const validated = new Set();
 const usableModels = () => models
@@ -275,6 +355,18 @@ async function describeTargetPaths() {
       exists: mofang.exists,
       note: mofang.exists ? null : '未找到 config.json；请先启动一次墨坊，或手动指定',
     },
+    qoder: {
+      configured: settings.qoderConfigFile || null,
+      resolved: qoderInfo.file,
+      exists: qoderInfo.exists === true,
+      note: qoderInfo.exists ? null : '未找到 settings.json；请先启动一次 Qoder，或手动指定',
+    },
+    trae: {
+      configured: settings.traeStateFile || null,
+      resolved: traeInfo.file,
+      exists: traeInfo.exists === true,
+      note: traeInfo.exists ? null : '未找到 state.vscdb；请先启动一次 Trae CN，或手动指定',
+    },
   };
 }
 update({ targetPaths: await describeTargetPaths() });
@@ -293,10 +385,18 @@ async function cleanupOldPaths(targets: TargetKey[]) {
         } else if (target === 'dsh') {
           if (!dshProfiles.length) continue;
           await syncDshProvider(dshProfiles, [], '', '', { providerId, allowEmpty: true });
-        } else {
+        } else if (target === 'mofang') {
           const { file, exists } = await resolveMofangConfig(mofangOptions());
           if (!exists) continue;
           await syncMofangProvider([], '', '', { file, allowEmpty: true, providerId, owner });
+        } else if (target === 'qoder') {
+          const { file, exists } = await resolveQoderConfig(qoderOptions());
+          if (!exists) continue;
+          await syncQoderProviders([], '', '', { file, source, owner, allowEmpty: true });
+        } else if (target === 'trae') {
+          const { file, exists } = await resolveTraeState(traeOptions());
+          if (!exists) continue;
+          await syncTraeModels([], '', '', { file, owner, allowEmpty: true });
         }
       } catch (error) {
         // 旧位置可能已被用户删掉：清不掉不是致命错，但要留痕，不能假装成功。
@@ -316,11 +416,15 @@ async function applyTargetPaths(nextSettings) {
   dshHome = locateDshHome({ saved: nextSettings.dshHome as string | undefined });
   dshProfiles = await listDshProfiles(dshHome);
   mofangInfo = await describeMofang({ savedFile: nextSettings.mofangConfigFile as string | undefined });
-  update({ modelsFile, dsh: dshAttachment(), mofang: mofangAttachment() });
+  qoderInfo = await describeQoder({ savedFile: nextSettings.qoderConfigFile as string | undefined });
+  traeInfo = await describeTrae({ savedFile: nextSettings.traeStateFile as string | undefined });
+  update({ modelsFile, dsh: dshAttachment(), mofang: mofangAttachment(), qoder: qoderAttachment(), trae: traeAttachment() });
 }
 
-// 三个目标的写入形态不同：WorkBuddy 吃一份 models.json 清单，DSH 吃 profile patch
-// 里的 llm-pi-ai provider，墨坊吃 config.json 的 providers 数组。对外都返回 {changed, count, target}。
+// 五个目标的写入形态不同：WorkBuddy 吃一份 models.json 清单，DSH 吃 profile patch
+// 里的 llm-pi-ai provider，墨坊吃 config.json 的 providers 数组，
+// Qoder 吃 settings.json 的 providers 对象，Trae 吃 state.vscdb 的模型清单键。
+// 对外都返回 {changed, count, target}。
 async function writePublished(target, published) {
   if (target === 'dsh')
     return syncDshProvider(dshProfiles, published, endpoint, key, { allowEmpty: true });
@@ -329,6 +433,20 @@ async function writePublished(target, published) {
     mofangInfo = await describeMofang(mofangOptions());
     const { file } = await resolveMofangConfig(mofangOptions());
     return syncMofangProvider(published, endpoint, key, { file, allowEmpty: true });
+  }
+  if (target === 'qoder') {
+    qoderInfo = await describeQoder(qoderOptions());
+    const { file } = await resolveQoderConfig(qoderOptions());
+    return syncQoderProviders(published, endpoint, key, { file, allowEmpty: true, source: 'opencode' });
+  }
+  if (target === 'trae') {
+    // Trae 采用引导式接入：实测直写 state.vscdb 走不通（Trae 启动时用云端数据重建
+    // 模型清单，会把写入的条目清掉；且它把 API Key 用自有 AES-GCM 加密，明文写进去
+    // 解不开鉴权必失败——见踩坑手册 §14）。写入动作不再落库，页面给填写参数让用户
+    // 在 Trae 里手动添加一次（长期有效）。唯一保留的写路径是清理残留条目（models 为空）。
+    if (published.length) return { changed: false, count: 0, skipped: true, target: 'trae', message: 'Trae 采用引导式接入：请按页面的填写参数在 Trae 里手动添加模型' };
+    const { file } = await resolveTraeState(traeOptions());
+    return syncTraeModels([], '', '', { file, allowEmpty: true, owner: SOURCE_OWNERS.opencode });
   }
   if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请点击导入并选择 models.json；首次使用请先在 WorkBuddy 保存一个自定义模型。');
   return syncModels(modelsFile, published, `${endpoint}/chat/completions`, key, { allowEmpty: true, requireExisting: process.platform === 'win32' });
@@ -353,6 +471,23 @@ function syncPublished(published = publishedModels().filter(m => !(settings.excl
 async function record(model, ok, error, status, code, durationMs, source = 'request', chatOnly = source === 'request' && state.modelResults[model]?.chatOnly === true, meta = {}) {
   if (stopping) return;
   const result = withRequestMeta({ model, ...modelResult(ok, error, status, code), durationMs, source, chatOnly }, meta);
+  // 墨镜账本（T1.4）：只记转发口真实调用（探测流量不进账本）。fire-and-forget，
+  // report 内部吞一切错误——记账绝不能影响转发主链路。
+  if (source === 'request' && model) {
+    try {
+      ledgerHook.report({
+        software: typeof meta.software === 'string' ? meta.software : 'unknown',
+        model,
+        upstream: 'opencode',
+        ok,
+        latencyMs: durationMs,
+        category: result.category,
+        status,
+        error,
+        usage: meta.usage && typeof meta.usage === 'object' ? meta.usage : null,
+      });
+    } catch { /* 旁路不抛 */ }
+  }
   // 原始审批载荷留档：事后还查得出被拦下的是哪种本机动作。
   const captured = Array.isArray(meta.permissions) && meta.permissions.length ? { lastPermission: { time: result.time, entries: meta.permissions } } : {};
   // 上游自身出问题是"这一轮"的事，不是对模型的判定：
@@ -403,6 +538,18 @@ function noteActivity(progress) {
   publishActivity();
 }
 let probing = false, probeTask;
+// 「停止检测」的分线标志：置 true 后各线探测循环跳过队首未开始的模型（正在跑的单个
+// 请求等它自然结束，最长 60s）。每次新一轮探测开始时由入口重置。
+const probeStop = { oc: false, sn: false, ac: false };
+// 每轮探测一个 AbortController（scope）：stopProbes 除了置标志位，还要 abort 在跑的请求——
+// 只靠标志位的话，正在跑的单个请求要等各自超时才结束（OC 默认 300s，用户实锤「停止中太久」）。
+// 多线并测时各持各的 scope：新开一轮不影响已有轮的 signal 引用；停止时全部 abort。
+const activeProbeScopes = new Set<AbortController>();
+function beginProbeScope(): AbortController {
+  const controller = new AbortController();
+  activeProbeScopes.add(controller);
+  return controller;
+}
 const probeAbort = new AbortController();
 
 // 缓存里还有新鲜判定的模型直接采用：不花一次请求，也不再等它。
@@ -435,7 +582,7 @@ function adoptCachedModels(candidates) {
 
 // 探测一个模型。每个模型有自己的超时预算（默认 60 秒，可在设置里调），
 // 语义没命中（只回文本、动作不符）重试一次并共用同一份预算；判定一律经 record() 落进状态与缓存。
-async function probeOneModel(model) {
+async function probeOneModel(model, signal = probeAbort.signal) {
   const started = performance.now();
   const timeoutMs = serviceSettings.probeTimeoutMs;
   const elapsed = () => Math.round(performance.now() - started);
@@ -460,9 +607,11 @@ async function probeOneModel(model) {
   try {
     // OpenCode 目录里明说没有工具能力的模型不必浪费一次探测。
     if (model.toolcall === false) throw new BridgeError('OpenCode catalog does not advertise tool support', 502, 'invalid_tool_call');
-    await probeModel({ complete: token => runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([probeAbort.signal, deadline.signal]), meta) });
+    await probeModel({ complete: token => runtime.backend.complete(prepare(probeBody(model, token), models), AbortSignal.any([signal, deadline.signal]), meta) });
     await record(model.id, true, undefined, undefined, undefined, elapsed(), 'probe', undefined, meta);
   } catch (cause) {
+    // 主动停止掐断的请求不算结论：不修复、不记录，该模型保留上一次判定
+    if (signal.aborted) return;
     const e = limitMessage
       ? new BridgeError(limitMessage, 429, 'rate_limited')
       : timedOut && lastRetry
@@ -477,7 +626,7 @@ async function probeOneModel(model) {
       try {
         const chatModel = { ...model, chatOnly: true };
         const chatBudget = Math.max(5000, Math.min(30000, Math.round(timeoutMs / 2)));
-        await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([probeAbort.signal, AbortSignal.timeout(chatBudget)]));
+        await runtime.backend.complete(prepare({ model: model.id, messages: [{ role: 'user', content: 'Reply only OK.' }] }, [chatModel]), AbortSignal.any([signal, AbortSignal.timeout(chatBudget)]));
         await record(model.id, true, '工具转换不兼容：' + e.message, undefined, 'chat_only', elapsed(), 'probe', true);
       } catch (chatError) {
         if (!stopping) await record(model.id, false, chatError.message, chatError.status, chatError.code, elapsed(), 'probe');
@@ -490,9 +639,12 @@ async function probeOneModel(model) {
 function startProbes(modelID, reveal = false, autoImport = false, { force = false } = {}) {
   if (stopping || refreshing || configSearch) throw new Error('请等待模型读取或配置查找完成');
   if (probing) return { started: false, message: '检测正在进行' };
+  probeStop.oc = false;
   const selected = modelID ? models.filter(m => m.id === modelID) : models;
   if (!selected.length) throw new Error('模型不在当前目录中');
   probing = true;
+  // 本轮探测的硬中断 scope：停止时 abort 在跑的请求（见 stopProbes）
+  const scope = beginProbeScope();
   // 先采用缓存判定，剩下的才需要真的发请求。
   const reused = force ? 0 : adoptCachedModels(selected);
   const reusable = new Set(selected.filter(model => probeCache.fresh(model)).map(model => model.id));
@@ -512,6 +664,7 @@ function startProbes(modelID, reveal = false, autoImport = false, { force = fals
       pending: [...pending],
       total: planned,
       done: Math.max(0, planned - pending.length - active.size),
+      concurrency: probeConcurrency(),
     },
   });
   probeTask = (async () => {
@@ -526,11 +679,11 @@ function startProbes(modelID, reveal = false, autoImport = false, { force = fals
       // 并发工作池：每个 worker 领一个模型跑完再领下一个。上游对并发敏感，
       // 所以并发度保守（默认 3），并且慢模型不再挡住快模型出结果。
       const workers = Array.from({ length: Math.min(probeConcurrency(), queue.length) }, async () => {
-        while (queue.length && !stopping) {
+        while (queue.length && !stopping && !probeStop.oc) {
           const model = queue.shift();
           active.add(model.id);
           publishProbe();
-          try { await probeOneModel(model); }
+          try { await probeOneModel(model, scope.signal); }
           finally {
             active.delete(model.id);
             pending.splice(pending.indexOf(model.id), 1);
@@ -541,7 +694,8 @@ function startProbes(modelID, reveal = false, autoImport = false, { force = fals
       await Promise.all(workers);
       // 目录里已经没有的模型，判定留着只会让缓存越来越大。
       probeCache.prune(models);
-      // 首次启动的整轮检测跑完就自动导入一次：这是"打开就能用"的那一步。
+      // 首次启动的整轮检测只做两件事：更新判定缓存 + 自动定位 WorkBuddy 配置路径。
+      // **不自动写入客户端**——写入只由用户点「写入配置」显式触发（2026-11-18 用户定案）。
       if (autoImport && !stopping) {
         if (process.platform === 'win32' && !modelsFile && process.env.MOBRIDGE_NO_SYNC !== '1') {
           const found = await findConfig(true);
@@ -552,11 +706,11 @@ function startProbes(modelID, reveal = false, autoImport = false, { force = fals
             modelsFile = found.candidates[0]; update({ modelsFile });
           }
         }
-        await syncPublished();
       }
       log.write(`${new Date().toISOString()} 检测轮结束：判定缓存命中 ${reused} 个，实际探测 ${planned} 个\n`);
     } finally {
       probing = false;
+      activeProbeScopes.delete(scope);
       // 收尾时把 total/done 都定格在满格：页面的进度条读的是这两个数，
       // 留空会让它在"已完成"的瞬间跳回 0/N。
       update({ probe: { running: false, current: null, active: [], pending: [], total: planned, done: planned }, cacheEntries: probeCache.size() });
@@ -574,6 +728,43 @@ function watchRuntime(current) {
       shutdown(1);
     }
   });
+}
+
+// findRuntime 的公共选项：代理环境、代理降级落盘、日志。boot 与 ensureRuntime 共用。
+function runtimeFindOptions() {
+  return {
+    proxyEnv: startupProxyEnv,
+    onProxyFallback: async () => {
+      // 自动探测出来的代理坏掉了：把开关也落成"关"，让 OpenCode 之后的出站别再用它。
+      if (settings.useSystemProxy !== true) {
+        startupProxyEnv = await systemProxyEnvironment(false);
+        update({ useSystemProxy: false });
+      }
+    },
+    log: (message: string) => log.write(`${new Date().toISOString()} ${message}\n`),
+  };
+}
+
+// OpenCode 运行时按需准备（单飞）：boot 只做本地探测，缺失时不阻塞启动——
+// 日日新 / AtomCode / 配置写入与运行时毫无关系，不该陪 76 MB 下载等。
+// 第一次真正用到 OpenCode 的动作（刷新目录 / 检测 / 跨盘找配置）走到这里：
+// 下载（进度经 state.message 展示）→ 拉起后端 → 校验专用 agent → 读目录。
+let ensureRuntimePromise: Promise<string> | null = null;
+async function ensureRuntime(): Promise<string> {
+  if (runtime && binary) return binary;
+  ensureRuntimePromise ??= (async () => {
+    const file = await findRuntime(dataDir, message => update({ message }), runtimeFindOptions());
+    binary = file;
+    update({ message: '正在启动 OpenCode 运行时' });
+    runtime = attachTranslator(await startBackend(file, dataDir, log, startupProxyEnv));
+    watchRuntime(runtime);
+    const agents = await runtime.backend.request('/agent');
+    if (!agents.some(a => a.name === 'mobridge')) throw new Error('Dedicated approval-gated agent missing');
+    await refresh();
+    update({ message: '运行中 · ' + models.length + ' 个免费模型' });
+    return file;
+  })().finally(() => { ensureRuntimePromise = null; });
+  return ensureRuntimePromise;
 }
 
 // 重新读取模型目录。restartRuntime 用于切换代理：OpenCode 的启动环境是固定的，
@@ -663,6 +854,16 @@ async function autoLocatePath(target) {
     if (!exists) throw new Error(`默认位置没有找到墨坊 config.json（预期 ${file}）；请先启动一次墨坊或手动指定文件`);
     return { target, path: file };
   }
+  if (target === 'qoder') {
+    const { file, exists } = await resolveQoderConfig();
+    if (!exists) throw new Error(`默认位置没有找到 Qoder settings.json（预期 ${file}）；请先启动一次 Qoder 或手动指定文件`);
+    return { target, path: file };
+  }
+  if (target === 'trae') {
+    const { file, exists } = await resolveTraeState();
+    if (!exists) throw new Error(`默认位置没有找到 Trae 的 state.vscdb（预期 ${file}）；请先启动一次 Trae CN 或手动指定文件`);
+    return { target, path: file };
+  }
   throw new Error('无效的写入目标');
 }
 
@@ -735,9 +936,134 @@ async function acRefreshCatalog(force = false) {
   const saved = await acReadSelection(dataDir);
   acSelection = (saved === null ? known : saved).filter(id => known.includes(id));
   acAuth = await readAuth();
+  // 真跑一遍可用性：登录成功 / 手动强刷时重测，平时沿用 30 分钟内的结论。
+  // 已登录但目录拿不到（离线快照）时也照测——转发口只认网关的路由表，目录来源无所谓。
+  if (acToken() && acModels().length && (force || Date.now() - acProbedAt > AC_PROBE_TTL_MS || known.some(id => !(id in acModelProbe)))) {
+    probeStop.ac = false;
+    const scope = beginProbeScope();
+    // 探测兜底 90 秒：daemon 慢/目录拉取慢时整轮探测会被拖进分钟级，登录后的
+    // "加载中"就是这么来的。超时先按"不下结论"返回，探测在后台继续、完成时补推。
+    const probeTask = acProbeModels(acModels(), scope.signal).then(r => ({ r, timedOut: false })).catch(() => ({ r: {} as typeof acModelProbe, timedOut: false }));
+    probeTask.finally(() => activeProbeScopes.delete(scope));
+    const timeoutTask = new Promise<{ r: typeof acModelProbe, timedOut: boolean }>(resolve => {
+      setTimeout(() => resolve({ r: {} as typeof acModelProbe, timedOut: true }), 90000);
+    });
+    const { r, timedOut } = await Promise.race([probeTask, timeoutTask]);
+    acModelProbe = r;
+    acProbedAt = Date.now();
+    if (timedOut) probeTask.then(({ r: late }) => { acModelProbe = { ...acModelProbe, ...late }; update({ atomcode: acSnapshot() }); });
+    const rejected = known.filter(id => acModelProbe[id]?.reason === 'rejected');
+    if (rejected.length) log.write(`${new Date().toISOString()} AtomCode 模型可用性探测：${rejected.join('、')} 被上游拒绝，已从可写入清单剔除\n`);
+  }
   update({ atomcode: acSnapshot() });
   return acSnapshot();
 }
+// 等用户在弹出的终端里完成浏览器授权：auth.toml 一有动静就返回。
+// 首次登录看 token 是否出现；已有凭据的重新登录看 mtime 有没有变化。
+// 上限 170s：比主进程转发口（200s）和页面 race（200s）的期限都短，超时不会误报成请求失败。
+async function acWaitForLogin(before: Awaited<ReturnType<typeof readAuth>>, deadlineMs = 170000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < deadlineMs) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (stopping) return { ok: false, code: null, output: '本地服务正在停止，登录等待中断。' };
+    const now = await readAuth();
+    const hasToken = typeof now.values.access_token === 'string';
+    if (hasToken && (!before.present || now.mtimeMs !== before.mtimeMs))
+      return { ok: true, code: 0, output: `已在弹出的终端里完成登录（${path.basename(now.file)} 已更新）。` };
+  }
+  return { ok: false, code: null, output: '等待登录超时：如果终端窗口已关闭或授权没完成，请重试；若已在别处完成登录，回本页点「重新检测」。' };
+}
+
+// ── 托管 daemon（模块级：探测与转发口共用同一条路）────────────────────────
+// daemon 用用户自己的 ~/.atomcode 登录态完成签名、直连 llm-api 真端点——
+// api-ai 网关不路由 CodingPlan 模型，这条路是 AC 模型真正可用的唯一解。
+let acDaemonStarting: Promise<DaemonRuntime | null> | null = null;
+const acEnsureDaemon = async (): Promise<DaemonRuntime | null> => {
+  if (stopping) return null;
+  if (acDaemon?.alive()) return acDaemon;
+  if (!acFound.installed || !acFound.path) return null;
+  acDaemonStarting ??= startAtomcodeDaemon({ binary: acFound.path, log: m => log.write(`${new Date().toISOString()} ${m}\n`) })
+    .then(rt => { acDaemon = rt; acDaemonModels = null; log.write(`${new Date().toISOString()} AtomCode daemon 就绪：${rt.endpoint}\n`); return rt; })
+    .catch(e => { log.write(`${new Date().toISOString()} AtomCode daemon 启动失败：${e.message}\n`); acDaemon = null; return null; })
+    .finally(() => { acDaemonStarting = null; });
+  return await acDaemonStarting;
+};
+// 目录真名 → daemon 的选择 id（config 键，默认 AtomGit- 前缀兜底）。
+const acDaemonSelection = async (upstream: string): Promise<{ rt: DaemonRuntime; selection: string } | null> => {
+  const rt = await acEnsureDaemon();
+  if (!rt) return null;
+  acDaemonModels ??= await daemonModels(rt.endpoint, rt.token).catch(() => []);
+  const hit = acDaemonModels.find(m => m.model === upstream)
+    ?? acDaemonModels.find(m => m.model.toLowerCase() === upstream.toLowerCase());
+  return { rt, selection: hit?.provider ?? `AtomGit-${upstream}` };
+};
+/** 经 daemon 跑一次补全（补全契约信封 + 外部工具校验），转发口与探测共用。 */
+const acDaemonComplete = async (upstream: string, messages: Array<Record<string, unknown>>, tools: Array<Record<string, unknown>>, signal?: AbortSignal) => {
+  const via = await acDaemonSelection(upstream);
+  if (!via) return null;
+  const reply = await daemonChat({
+    endpoint: via.rt.endpoint, token: via.rt.token,
+    message: buildDaemonCompletionMessage(messages, tools),
+    provider: via.selection,
+    // 授权档位是用户设置项（settings.json 的 atomcodeApprovalMode），不再写死。
+    approvalMode: serviceSettings.atomcodeApprovalMode,
+    workingDir: dataDir, signal,
+  });
+  const parsed = parseDaemonReply(reply.content);
+  const toolCalls = parsed.calls.map(call => {
+    const validated = validateAction(call, tools);
+    return { id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function' as const, function: { name: validated.name, arguments: JSON.stringify(validated.arguments) } };
+  });
+  return { content: parsed.content ?? '', tool_calls: toolCalls, reasoning: reply.reasoning };
+};
+/**
+ * 可用性探测：daemon 优先（签名正确、真端点），daemon 不可用才回落网关静态头探测。
+ * 判定口径与 probePlanModels 一致：真回复=可用；包装错误=拒绝；其它故障=不下结论。
+ */
+// 最近一轮探测走的哪条路（daemon / gateway）：daemon 挂了页面要提示重新登录。
+let acLastProbeVia: 'daemon' | 'gateway' | null = null;
+const acProbeModels = async (models: Array<{ upstream: string }>, signal?: AbortSignal): Promise<Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }>> => {
+  const via = await acDaemonSelection(models[0]?.upstream ?? '').catch(() => null);
+  if (!via) { acLastProbeVia = 'gateway'; return probePlanModels(acGateway.gateway, acToken() ?? '', models, { signal: signal ?? null }); }
+  acLastProbeVia = 'daemon';
+  const canary = '请只回复两个字符：OK，不要任何其他内容。';
+  const results: Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }> = {};
+  // 与 OpenCode / 日日新同一套并发池口径，别让模型多时全部裸并发砸向网关。
+  await runWithConcurrency(models, probeConcurrency(), async model => {
+    try {
+      // daemon 刚启动失败/不可用时，后续每个模型都会在这里白等一次启动超时，
+      // 2 个模型也能把整轮探测拖进分钟级（登录后卡"加载中"的主因）。失败一次即整轮降级。
+      // 「停止检测」：置位后未开始的模型直接跳过（AC 线）。
+      if (probeStop.ac) return;
+      const via2 = await acDaemonSelection(model.upstream).catch(() => null);
+      if (!via2) { Object.assign(results, await probePlanModels(acGateway.gateway, acToken() ?? '', [model], { signal: signal ?? null })); return; }
+      const reply = await daemonChat({
+        endpoint: via2.rt.endpoint, token: via2.rt.token,
+        message: buildDaemonCompletionMessage([{ role: 'user', content: canary }], []),
+        provider: via2.selection,
+        approvalMode: serviceSettings.atomcodeApprovalMode,
+        workingDir: dataDir, timeoutMs: 45000, signal,
+      });
+      // 手动停止掐断的请求不算结论（保留该模型上一次判定）
+      if (signal?.aborted) return;
+      const parsed = parseDaemonReply(reply.content);
+      const text = String(parsed.content ?? '').trim();
+      const wrapped = wrappedUpstreamError(text);
+      if (wrapped) { results[model.upstream] = { ok: false, reason: 'rejected', detail: wrapped }; return; }
+      if (/OK/i.test(text)) { results[model.upstream] = { ok: true, reason: 'ok', detail: null }; return; }
+      // 有真实回复但没按哨兵词答：模型确实路由到了，按可用对待
+      results[model.upstream] = { ok: true, reason: 'ok', detail: null };
+    } catch (error) {
+      const message = String((error as Error).message || '');
+      // 服务端明确拒绝（权益/模型名不存在）→ 拒绝；其余按网络类故障不下结论
+      if (/not enabled|Invalid model|not found/i.test(message))
+        results[model.upstream] = { ok: false, reason: 'rejected', detail: message.slice(0, 200) };
+      else
+        results[model.upstream] = { ok: false, reason: 'inconclusive', detail: message.slice(0, 200) };
+    }
+  });
+  return results;
+};
 async function writeAtomcode(target, models) {
   if (!acBridge) throw new Error('AtomCode 转发口未启动，请重启服务后重试');
   const endpoint = `${acBridge.endpoint}/v1`;
@@ -753,6 +1079,18 @@ async function writeAtomcode(target, models) {
       owner: SOURCE_OWNERS.atomcode, name: '墨桥 · AtomCode', ...acClient,
     });
   }
+  if (target === 'qoder') {
+    const { file } = await resolveQoderConfig(qoderOptions());
+    return syncQoderProviders(models, endpoint, acBridge.key, {
+      file, allowEmpty: true, source: 'atomcode', owner: SOURCE_OWNERS.atomcode, ...acClient,
+    });
+  }
+  if (target === 'trae') {
+    // 引导式接入：不落库（理由见 writePublished 的 trae 分支）；清理动作保留。
+    if (models.length) return { changed: false, count: 0, skipped: true, target: 'trae', message: 'Trae 采用引导式接入：请按页面的填写参数在 Trae 里手动添加模型' };
+    const { file } = await resolveTraeState(traeOptions());
+    return syncTraeModels([], '', '', { file, allowEmpty: true, owner: SOURCE_OWNERS.atomcode });
+  }
   if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请先导入并选择 models.json');
   return syncModels(modelsFile, models, `${endpoint}/chat/completions`, acBridge.key, {
     allowEmpty: true, requireExisting: process.platform === 'win32',
@@ -760,11 +1098,15 @@ async function writeAtomcode(target, models) {
   });
 }
 async function acImport() {
-  const chosen = acModels().filter(model => acSelection.includes(model.upstream));
+  // 被上游明确拒绝（套餐未启用/已下线）的模型不写入——写进客户端只会换来
+  // 一条伪装成回复的"参数错误"。网络原因（inconclusive）不下结论，照常放行。
+  const usable = model => acModelProbe[model.upstream]?.reason !== 'rejected';
+  const usableCount = acSelection.filter(id => usable({ upstream: id })).length;
+  const chosen = acModels().filter(model => acSelection.includes(model.upstream) && usable(model));
   const active = state.target || 'workbuddy';
   const result = await writeAtomcode(active, chosen);
   update({ atomcode: acSnapshot() });
-  return { ...result, target: active };
+  return { ...result, target: active, blocked: acSelection.length - usableCount };
 }
 async function acRemove() {
   const active = state.target || 'workbuddy';
@@ -780,7 +1122,10 @@ async function acRemove() {
 const snClient = {
   // 发给上游的必须是真名；带前缀的名字只用于展示。
   idOf: (model: { upstream: string }) => model.upstream,
-  labelOf: (model: { id: string }) => model.id,
+  // label 之前直接抄 model.id（SN · sensenova-6.8-flash），WorkBuddy 的模型列表按
+  // 「name:id」拼着显示，等于把上游名连读两遍（用户反馈太长）。改用目录展示名，
+  // 前缀仍保留——三方写入同一份配置靠它防同名覆盖。
+  labelOf: (model: { id: string, name?: string }) => model.name ? `SN · ${model.name}` : model.id,
 };
 async function snSyncState() {
   snKey = await snReadKey(dataDir);
@@ -805,10 +1150,26 @@ async function writeSensenova(target, models) {
       owner: SOURCE_OWNERS.sensenova, name: '墨桥 · 日日新', ...snClient,
     });
   }
+  if (target === 'qoder') {
+    const { file } = await resolveQoderConfig(qoderOptions());
+    return syncQoderProviders(models, snBase.apiBase, snKey, {
+      file, allowEmpty: true, source: 'sensenova', owner: SOURCE_OWNERS.sensenova, ...snClient,
+    });
+  }
+  if (target === 'trae') {
+    // 引导式接入：不落库（理由见 writePublished 的 trae 分支）；清理动作保留。
+    if (models.length) return { changed: false, count: 0, skipped: true, target: 'trae', message: 'Trae 采用引导式接入：请按页面的填写参数在 Trae 里手动添加模型' };
+    const { file } = await resolveTraeState(traeOptions());
+    return syncTraeModels([], '', '', { file, allowEmpty: true, owner: SOURCE_OWNERS.sensenova });
+  }
   if (!modelsFile) throw new Error('未找到有效的 WorkBuddy 配置，请先导入并选择 models.json');
+  // WorkBuddy 是平铺清单且没有转发口：id 必须是上游真名，否则上游直接 404
+  // （2026-11-18 的线上事故：写入的是 `SN · xxx` 展示名，上游回 model is not found）。
+  // name 写展示名（SN · 展示名），WorkBuddy 的模型列表里好认——注意别抄 id：
+  // WorkBuddy 按「name:id」拼接显示，name 里再带一遍上游名就连读两遍（用户反馈太长）。
   return syncModels(modelsFile, models, `${snBase.apiBase}/chat/completions`, snKey, {
     allowEmpty: true, requireExisting: process.platform === 'win32',
-    owner: SOURCE_OWNERS.sensenova, clientId: model => model.id,
+    owner: SOURCE_OWNERS.sensenova, clientId: model => model.upstream, labelOf: snClient.labelOf,
   });
 }
 async function snImport() {
@@ -829,17 +1190,24 @@ async function snRemove() {
 }
 async function snValidateAction() {
   if (!snKey) throw new Error('尚未配置 API Key，请先填写');
+  const scope = beginProbeScope();
   const result = await snValidate(snKey, { baseUrl: snBase.apiBase, preferred: SN_PROBE_MODEL, timeoutMs: serviceSettings.sensenovaTimeoutMs });
   snValidation = { ...result, time: new Date().toISOString() };
   // 鉴权通过就把每个模型都真跑一遍：账号能连不等于每个模型都可用。
-  if (result.ok) snProbeResults = await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, timeoutMs: serviceSettings.sensenovaTimeoutMs });
+  try {
+    if (result.ok) { probeStop.sn = false; snProbeResults = await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal }); }
+  } finally { activeProbeScopes.delete(scope); }
   update({ sensenova: snSnapshot() });
   return { ...result, available: Object.values(snProbeResults).filter((item: any) => item?.ok === true).length };
 }
 async function snProbeAction(only) {
   if (!snKey) throw new Error('尚未配置 API Key，请先填写');
   const ids = Array.isArray(only) && only.length ? only : null;
-  snProbeResults = { ...snProbeResults, ...await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, only: ids, timeoutMs: serviceSettings.sensenovaTimeoutMs }) };
+  const scope = beginProbeScope();
+  try {
+    probeStop.sn = false;
+    snProbeResults = { ...snProbeResults, ...await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, only: ids, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal }) };
+  } finally { activeProbeScopes.delete(scope); }
   update({ sensenova: snSnapshot() });
   return { available: Object.values(snProbeResults).filter((item: any) => item?.ok === true).length };
 }
@@ -847,7 +1215,7 @@ async function snProbeAction(only) {
 // 切换写入目标：旧目标先摘掉自己的条目（否则两处都会指向这个本机转发口，
 // 关掉 MoBridge 后留下两份死配置），再持久化选择、立刻把当前勾选写进新目标。
 async function setTarget(next) {
-  if (!['workbuddy', 'dsh', 'mofang'].includes(next)) throw new Error('无效的写入目标');
+  if (!['workbuddy', 'dsh', 'mofang', 'qoder', 'trae'].includes(next)) throw new Error('无效的写入目标');
   // 后台检测在跑时也允许切目标：一整轮探测最坏要几分钟（60s × 12 个模型 / 并发 3），
   // 让用户在这期间点不动「写入目标」没有任何道理。
   // 并发安全靠两点保证：① 所有写入都排在 syncWrites 这条串行队列上；
@@ -861,28 +1229,50 @@ async function setTarget(next) {
     mofangInfo = await describeMofang(mofangOptions());
     if (!mofangInfo.exists) throw new Error('未检测到墨坊配置；请先启动一次墨坊（~/.mofang/config.json）');
   }
+  if (next === 'qoder') {
+    qoderInfo = await describeQoder(qoderOptions());
+    if (!qoderInfo.exists) throw new Error('未检测到 Qoder 设置；请先启动一次 Qoder（~/.qoder-cn/settings.json）');
+  }
+  if (next === 'trae') {
+    traeInfo = await describeTrae(traeOptions());
+    if (!traeInfo.exists) throw new Error('未检测到 Trae 数据库；请先启动一次 Trae CN（%APPDATA%/Trae CN）');
+    // 切换不再写入（Trae 已改引导式接入），运行中也能切：清理残留时 syncTraeModels 会自行拦。
+  }
   // 等排队中的自动写入落完再清理：否则一次轮末同步可能在切换后又写回旧目标。
   await syncWrites;
   const previous = state.target || 'workbuddy';
   state = { ...state, target: next };
-  try {
-    if (previous === 'dsh' && dshProfiles.length) await syncDshProvider(dshProfiles, [], endpoint, key, { allowEmpty: true });
-    else if (previous === 'mofang' && mofangInfo.exists) await writePublished('mofang', []);
-    else if (previous === 'workbuddy' && modelsFile) await writePublished('workbuddy', []);
-  } catch (error) {
-    // 清理失败要退回去：内存目标不能比落盘的设置跑在前面。
-    state = { ...state, target: previous };
-    throw new Error('清理原写入目标失败：' + error.message);
+  // 「切目标 = 搬走」是可选行为（设置面板可开，默认关）：
+  // 默认只改"往哪写"——不动旧目标里的条目、也不自动把勾选写进新目标；
+  // 清理旧目标用「移除配置」、写新目标用「写入配置」，都由用户显式触发。
+  // 引导式接入的 Trae 无论开关都不清理：墨桥从没往里写过条目，清理只会白撞运行中检查。
+  if (serviceSettings.migrateOnTargetSwitch && previous !== 'trae') {
+    try {
+      if (previous === 'dsh' && dshProfiles.length) await syncDshProvider(dshProfiles, [], endpoint, key, { allowEmpty: true });
+      else if (previous === 'mofang' && mofangInfo.exists) await writePublished('mofang', []);
+      else if (previous === 'qoder' && qoderInfo.exists) await writePublished('qoder', []);
+      else if (previous === 'workbuddy' && modelsFile) await writePublished('workbuddy', []);
+    } catch (error) {
+      // 清理失败要退回去：内存目标不能比落盘的设置跑在前面。
+      state = { ...state, target: previous };
+      throw new Error('清理原写入目标失败：' + error.message);
+    }
   }
   const updated = { ...settings, target: next };
   await atomicWrite(settingsFile, JSON.stringify(updated));
   settings = updated;
   mofangInfo = await describeMofang(mofangOptions());
-  update({ target: next, dsh: dshAttachment(), mofang: mofangAttachment() });
+  qoderInfo = await describeQoder(qoderOptions());
+  traeInfo = await describeTrae(traeOptions());
+  update({ target: next, dsh: dshAttachment(), mofang: mofangAttachment(), qoder: qoderAttachment(), trae: traeAttachment() });
   await refreshTargets();
-  const sync = await syncPublished();
-  if (sync.error) throw new Error(sync.error);
-  return { ...sync, target: next };
+  if (serviceSettings.migrateOnTargetSwitch) {
+    const sync = await syncPublished();
+    if (sync.error) throw new Error(sync.error);
+    return { ...sync, target: next };
+  }
+  // 未迁移：勾选保持不变（切回来时条目还在旧目标里，随时能再切回去用）。
+  return { target: next, changed: true, count: 0, migrated: false };
 }
 
 // ── 设置 ─────────────────────────────────────────────────────────────────
@@ -977,6 +1367,7 @@ async function shutdown(code = 0) {
   // 用户点一下窗口的 ×，客户端里刚配好的模型就集体消失，属于没有任何提示的数据副作用。
   // 摘条目只应该由「移除配置」这个显式动作触发（server 的 /admin/remove）。
   try { acBridge?.close(); } catch { /* 已关闭 */ }
+  try { acDaemon?.stop(); } catch { /* 已退出 */ }
   if (code === 0) update({ phase: 'stopped', message: '已停止' });
   await settle(runtime?.stop(), 2500);
   await settle(refreshing, 1500);
@@ -1010,18 +1401,21 @@ try {
     update({ useSystemProxy: false });
     log.write(`${new Date().toISOString()} 未检测到可用的系统代理，首次下载改为直连：${error.message}\n`);
   }
-  binary = await findRuntime(dataDir, message => update({ message }), {
-    proxyEnv: startupProxyEnv,
-    onProxyFallback: async () => {
-      // 自动探测出来的代理坏掉了：把开关也落成"关"，让 OpenCode 之后的出站别再用它。
-      if (settings.useSystemProxy !== true) {
-        startupProxyEnv = await systemProxyEnvironment(false);
-        update({ useSystemProxy: false });
-      }
-    },
-    log: message => log.write(`${new Date().toISOString()} ${message}\n`),
-  });
-  server = createServer({ server, key, selectModel, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels, refresh: readModels, importModels, removeImported, findConfig, setSystemProxy, setTarget,
+  // OpenCode 运行时按需准备：boot 只做本地探测（毫秒级、不打网络、不下载）。
+  // 缺失时不阻塞启动——日日新 / AtomCode / 配置写入照常可用，OpenCode 相关动作
+  // 触发 ensureRuntime 时才真正下载（进度经 state.message 展示）。
+  try {
+    binary = await findRuntime(dataDir, message => update({ message }), { ...runtimeFindOptions(), autoInstall: false });
+  } catch (error) {
+    binary = null;
+    log.write(`${new Date().toISOString()} OpenCode 运行时未就绪，启动跳过（${error.message}）；用到时按需准备\n`);
+  }
+  server = createServer({ server, key, selectModel, backend: { complete: (...args) => runtime.backend.complete(...args) }, getModels: publishedModels,
+    // OpenCode 相关动作先按需准备运行时：boot 缺运行时不阻塞，第一次用到时再下载。
+    refresh: async () => { await ensureRuntime(); return readModels() },
+    probe: async (modelID, reveal, autoImport, opts) => { await ensureRuntime(); return startProbes(modelID, reveal, autoImport, opts) },
+    findConfig: async (...args) => { await ensureRuntime(); return findConfig(...args) },
+    importModels, removeImported, setSystemProxy, setTarget,
     inspectTargets: async () => { await refreshTargets(); return state.targets },
     saveSettings, autoLocatePath, clearCache: clearProbeCache,
     sensenova: {
@@ -1044,26 +1438,59 @@ try {
       },
       login: async () => {
         const found = acFound.installed ? { path: acFound.path } : await detectAtomcode();
-        const result = await runLogin(found.path);
+        if (!found.path) return { ok: false, code: null, terminal: null, output: '未找到 atomcode，请先安装', ...acSnapshot() };
+        // 浏览器 OAuth 必须有 TTY 才进得去：弹一个可见终端窗口让用户自己跑 `atomcode login`，
+        // 这里只盯着 auth.toml 等结果。终端弹不出来（精简系统/非 Windows）才退回无头直跑。
+        const before = await readAuth();
+        const opened = await openLoginTerminal(found.path);
+        const result = opened.ok
+          ? await acWaitForLogin(before)
+          : await runLogin(found.path);
         await acSyncState();
+        // 登录结果先上屏：目录刷新与可用性探测还要跑一会（有 90s 兜底），
+        // 不能让用户在终端里明明登录成功了、页面却一直干等。
+        update({ atomcode: acSnapshot(), message: result.ok ? 'AtomCode 登录成功，正在刷新目录与可用性…' : 'AtomCode 登录未完成' });
         acClearCache();
         await acRefreshCatalog(true);
-        return { ...result, ...acSnapshot() };
+        return { ...result, terminal: opened.ok ? opened.terminal : null, ...acSnapshot() };
       },
       refresh: async () => { acClearCache(); await acRefreshCatalog(true); return acSnapshot() },
+      // 单模型重测：只重跑勾选的那几个（省额度），结论并入 30 分钟缓存表。
+      probe: async (ids) => {
+        probeStop.ac = false;
+        const wanted = Array.isArray(ids) && ids.length
+          ? acModels().filter(model => ids.includes(model.upstream) || ids.includes(model.id))
+          : acModels();
+        if (!wanted.length) return acSnapshot();
+        const scope = beginProbeScope();
+        try {
+          acModelProbe = { ...acModelProbe, ...await acProbeModels(wanted, scope.signal).catch(() => ({})) };
+        } finally { activeProbeScopes.delete(scope); }
+        acProbedAt = Date.now();
+        update({ atomcode: acSnapshot() });
+        return acSnapshot();
+      },
       'save-gateway': async value => { acGateway = await saveGateway(dataDir, value); update({ atomcode: acSnapshot() }); return acGateway },
       'reset-gateway': async () => { acGateway = await saveGateway(dataDir, ''); update({ atomcode: acSnapshot() }); return acGateway },
       selection: async value => { acSelection = await acSaveSelection(dataDir, value?.ids); update({ atomcode: acSnapshot() }); return { selection: acSelection } },
       import: acImport,
       remove: acRemove,
     },
-    status: () => state, probe: startProbes, onResult: record, onActivity: noteActivity });
+    status: () => state, onResult: record, onActivity: noteActivity,
+    // 「停止检测」：三线探测循环的统一中断开关（底部进度条上的停止按钮触发）。
+    // 标志位让未开始的模型直接跳过；abort 掐断每线在跑的请求——否则要等各自超时
+    // （OC 默认 300s），用户看到的就是「停止中」挂很久。
+    stopProbes: () => { probeStop.oc = probeStop.sn = probeStop.ac = true; for (const c of activeProbeScopes) c.abort(); activeProbeScopes.clear(); return { stopped: true }; } });
   // AtomCode 转发口：独立端口、独立口令，错了也不影响主转发口。
+  // daemon 优先/网关兜底的实现在模块级 acDaemonComplete（探测与转发共用同一条路）。
   try {
     acBridge = await startAtomcodeBridge({
       dataDir,
       port: atomcodePort,
       getState: () => ({ models: acModels(), token: acToken(), gateway: acGateway.gateway }),
+      daemon: { complete: acDaemonComplete },
+      // 墨镜账本（T1.4）：AtomCode 口的每次转发也记一行（渠道=atomcode，model=上游真名）。
+      onCall: info => { try { ledgerHook.report({ ...info, upstream: 'atomcode' }); } catch { /* 旁路不抛 */ } },
     });
   } catch (error) {
     acBridge = null;
@@ -1072,23 +1499,27 @@ try {
   }
   await acRefreshCatalog(false).catch(() => {});
   update({ atomcode: acSnapshot() });
-  update({ message: '正在启动隔离模型服务' });
-  runtime = attachTranslator(await startBackend(binary, dataDir, log, startupProxyEnv));
-  watchRuntime(runtime);
-  // 确认运行的是本产品要的专用 agent，而不是用户自己的构建 agent。
-  const agents = await runtime.backend.request('/agent');
-  if (!agents.some(a => a.name === 'mobridge')) throw new Error('Dedicated approval-gated agent missing');
-  await refresh();
-  // 先把三个写入目标的体检结果算出来：页面第一次渲染就要知道「移除配置」能不能点。
   await refreshTargets();
-  update({ cacheEntries: probeCache.size() });
-  // 启动即整轮检测（默认开）：「打开就能用」靠的就是这一步。
-  // 关掉之后仍然沿用缓存里的判定——否则每次都从零开始，用户还得手动点一次"检测全部"。
-  const round = serviceSettings.autoProbeOnStart ? startProbes(undefined, true, true) : { reused: adoptCachedModels(models), probing: 0 };
-  // 采用缓存判定之后立刻同步一次：热启动时模型几秒内就回到 WorkBuddy 里，
-  // 不必等这一轮真正要探测的那几个跑完（轮末还会再同步一次）。
-  if (!stopping && round?.reused) await syncPublished();
-  if (!stopping && !serviceSettings.autoProbeOnStart)
-    log.write(`${new Date().toISOString()} 已关闭启动自动检测，仅采用 ${round?.reused ?? 0} 条缓存判定\n`);
-  console.log(`MoBridge ready at ${endpoint}; ${models.length} free models; probe cache hit ${round?.reused ?? 0}, probing ${round?.probing ?? 0}`);
+  if (binary) {
+    update({ message: '正在启动隔离模型服务' });
+    runtime = attachTranslator(await startBackend(binary, dataDir, log, startupProxyEnv));
+    watchRuntime(runtime);
+    // 确认运行的是本产品要的专用 agent，而不是用户自己的构建 agent。
+    const agents = await runtime.backend.request('/agent');
+    if (!agents.some(a => a.name === 'mobridge')) throw new Error('Dedicated approval-gated agent missing');
+    await refresh();
+    update({ cacheEntries: probeCache.size() });
+    // 启动即整轮检测（默认开）：探测只更新墨桥自己的判定与可用清单，
+    // **不再自动写入客户端**——写入只由用户点「写入配置」显式触发（2026-11-18 用户定案）。
+    const round = serviceSettings.autoProbeOnStart ? startProbes(undefined, true, false) : { reused: adoptCachedModels(models), probing: 0 };
+    if (!stopping && !serviceSettings.autoProbeOnStart)
+      log.write(`${new Date().toISOString()} 已关闭启动自动检测，仅采用 ${round?.reused ?? 0} 条缓存判定\n`);
+    console.log(`MoBridge ready at ${endpoint}; ${models.length} free models; probe cache hit ${round?.reused ?? 0}, probing ${round?.probing ?? 0}`);
+  } else {
+    // 无运行时也照常就绪：其余接入线（日日新 / AtomCode / 配置写入）全部可用。
+    // 这里必须显式把 phase 置为 ready——if 分支靠 refresh() 置位，这条分支没有
+    // refresh，漏了它 phase 就停在 starting，页面永远显示"加载中"（同事电脑实锤）。
+    update({ phase: 'ready', cacheEntries: probeCache.size(), message: 'OpenCode 运行时未安装：进入「OpenCode 接入」页或点「检测全部」时自动下载' });
+    console.log(`MoBridge ready at ${endpoint} (deferred OpenCode runtime)`);
+  }
 } catch (e) { update({ phase: 'error', message: e.message }); if (!runtime) await shutdown(1); }

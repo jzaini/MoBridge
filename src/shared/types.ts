@@ -11,7 +11,7 @@
  * 三者写入形态不同——前两者是「一整份清单」，DSH 是 profile patch，
  * 墨坊是 config.json 里 providers 数组中的一条。
  */
-export type TargetKind = 'workbuddy' | 'dsh' | 'mofang'
+export type TargetKind = 'workbuddy' | 'dsh' | 'mofang' | 'qoder' | 'trae'
 
 /**
  * 后台服务生命周期阶段。
@@ -119,6 +119,8 @@ export interface ServiceSettings {
   transientTtlMinutes: number
   /** 启动后是否自动跑一轮完整检测（关掉后只用上次的判定结果）。 */
   autoProbeOnStart: boolean
+  /** 切换写入目标时是否自动"搬走"：摘旧目标里墨桥的条目 + 把勾选写进新目标。默认关。 */
+  migrateOnTargetSwitch: boolean
   /** 日日新单模型检测超时（毫秒）。 */
   sensenovaTimeoutMs: number
   /**
@@ -128,6 +130,11 @@ export interface ServiceSettings {
   port: number
   /** AtomCode 独立转发口（它要注入自己的头，语义与主转发口不同，必须分开监听）。 */
   atomcodePort: number
+  /**
+   * AtomCode daemon 的授权档位（approval_mode），随每次对话下发给 daemon。
+   * bypass 被刻意排除：那会让 daemon 原生工具不经询问直接执行。
+   */
+  atomcodeApprovalMode: 'build' | 'plan' | 'accept_edits'
 }
 
 /** 单个写入目标的路径现状：改动前先看清楚「写到哪、找不找得到」。 */
@@ -246,6 +253,10 @@ export interface ServiceState {
   dsh?: { home?: string; profiles?: string[]; [key: string]: unknown }
   /** 墨坊侧挂载情况：配置文件位置、已有 provider 清单、当前激活项。 */
   mofang?: { home?: string; file?: string | null; providers?: string[]; active?: string | null; [key: string]: unknown }
+  /** Qoder 侧挂载情况：settings.json 位置、里面非墨桥的 provider 键。 */
+  qoder?: { home?: string; file?: string | null; exists?: boolean; providers?: string[]; userProviders?: string[]; [key: string]: unknown }
+  /** Trae 侧挂载情况：state.vscdb 位置、是否有我们的条目、Trae 是否在运行。 */
+  trae?: { home?: string; file?: string | null; exists?: boolean; running?: boolean; owned?: number; [key: string]: unknown }
   /** 日日新（直连上游，无需本机转发口）：密钥、真实可用性、勾选与写入记录。 */
   sensenova?: SensenovaState
   /** AtomCode：本机安装/登录状态、CodingPlan 目录、独立转发口。 */
@@ -259,6 +270,8 @@ export interface ServiceState {
   /** 判定缓存里现在有多少条结论。 */
   cacheEntries?: number
   actionBusy?: string | false
+  /** 主进程正在收摊（停服务、可选摘条目、释放端口）：渲染层据此盖退出遮罩。 */
+  shuttingDown?: boolean
 }
 
 /** 选择动作的单模型载荷。 */

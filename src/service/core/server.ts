@@ -31,7 +31,7 @@ async function readBody(req) {
 }
 function json(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); }
 
-export function createServer({ server = http.createServer(), key, selectModel, backend, getModels, refresh, importModels, removeImported, findConfig, setSystemProxy, setTarget, inspectTargets, saveSettings, autoLocatePath, clearCache, sensenova, atomcode, probe, status, onResult = () => {}, onActivity }) {
+export function createServer({ server = http.createServer(), key, selectModel, backend, getModels, refresh, importModels, removeImported, findConfig, setSystemProxy, setTarget, inspectTargets, saveSettings, autoLocatePath, clearCache, sensenova, atomcode, probe, stopProbes, status, onResult = () => {}, onActivity }) {
   const active = new Set();
   server.removeAllListeners('request');
   server.on('request', async (req, res) => {
@@ -46,11 +46,12 @@ export function createServer({ server = http.createServer(), key, selectModel, b
     try {
       if (req.method === 'GET' && route === '/health') return json(res, 200, status());
       if (req.method === 'GET' && route === '/v1/models') return json(res, 200, { object: 'list', data: getModels().map(m => ({ id: clientModelID(m), object: 'model', owned_by: 'opencode', name: clientModelID(m) })) });
-      if (req.method === 'POST' && route === '/admin/probe') {
-        // 面板上的探测是用户明确要求重新验证的动作，所以忽略判定缓存（force）。
+      if (req.method === 'POST' && route === '/admin/probe') {        // 面板上的探测是用户明确要求重新验证的动作，所以忽略判定缓存（force）。
         const body = await readBody(req);
         return json(res, 202, probe(body.model, true, false, { force: true }));
       }
+      // 「停止检测」：三线探测循环的统一中断开关，必须在探测进行中可调用。
+      if (req.method === 'POST' && route === '/admin/probe-stop') return json(res, 200, stopProbes());
       if (req.method === 'POST' && route === '/admin/system-proxy') return json(res, 200, await setSystemProxy((await readBody(req)).enabled));
       if (req.method === 'POST' && route === '/admin/find-config') return json(res, 200, await findConfig());
       if (req.method === 'POST' && route === '/admin/selection') {
@@ -91,6 +92,7 @@ export function createServer({ server = http.createServer(), key, selectModel, b
         if (action === 'install') return json(res, 200, await atomcode.install());
         if (action === 'login') return json(res, 200, await atomcode.login());
         if (action === 'refresh') return json(res, 200, await atomcode.refresh());
+        if (action === 'probe') return json(res, 200, await atomcode.probe(body.ids));
         if (action === 'save-gateway') return json(res, 200, await atomcode['save-gateway'](body.gateway));
         if (action === 'reset-gateway') return json(res, 200, await atomcode['reset-gateway']());
         if (action === 'selection') return json(res, 200, await atomcode.selection({ ids: body.ids }));
@@ -106,6 +108,8 @@ export function createServer({ server = http.createServer(), key, selectModel, b
       // 请求校验通过后，模型用的是上游 id（而不是客户端可见 id），下游全部按它记账。
       model = request.model.id;
       meta = { tools: request.tools.length, model: request.model.id, ...(onActivity ? { activity: onActivity } : {}) };
+      // 接出方暂无契约：优先自定义头，退回 user-agent，再退 unknown（墨镜账本的 software 维度）。
+      meta.software = String(req.headers['x-mobridge-client'] || req.headers['user-agent'] || 'unknown').slice(0, 120);
       if (body.stream) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
         // 先写一条注释行：客户端由此知道连接已经建立，而信封还在校验。
@@ -126,6 +130,8 @@ export function createServer({ server = http.createServer(), key, selectModel, b
       const result = await backend.complete(request, controller.signal, meta);
       // 被客户端取消的请求绝不能记成一次成功的调用。
       if (controller.signal.aborted) return;
+      // 墨镜账本（T1.4）要 token 数：usage 挂在 meta 上随 onResult 下去（失败时本来就没有）。
+      if (result && typeof result === 'object' && result.usage) meta.usage = result.usage;
       await onResult(model, true, undefined, undefined, undefined, Math.round(performance.now() - started), 'request', undefined, meta);
       result.model = body.model;
       if (body.stream) {

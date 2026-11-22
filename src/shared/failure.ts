@@ -37,6 +37,12 @@ const RULES: Rule[] = [
     advice: '换用 Windows Terminal / PowerShell 手动执行 atomcode login。',
   },
   {
+    // 上游网关把拒绝伪装成助手回复（"参数错误"/"三方请求失败: …"），转发口还原成错误后才走到这里。
+    test: /参数错误|三方请求失败/,
+    summary: '上游拒绝了这个模型：多半是套餐未启用或模型已下线（目录与权益不同步）。',
+    advice: '回墨桥 AtomCode 页点「刷新目录」重新校验，可用性通过后再写入。',
+  },
+  {
     test: /Free usage exceeded|quota|时间窗口用量|额度不足|额度已用尽/i,
     summary: '上游额度用尽了，这一步被上游拒绝。',
     advice: '换个时间段再试，或在本页查看各模型的具体报错。',

@@ -1,4 +1,5 @@
 import { chatModels, DEFAULT_PROBE_MODEL, normalizeBase, type SensenovaModel } from '../config/sensenova.ts';
+import { runWithConcurrency } from './pool.ts';
 
 // 日日新的可用性判定：发一个极小的真实请求，量它本身的往返耗时。
 // 这里不做工具调用、不做信封——上游原生 OpenAI 兼容，客户端拿到的就是直连上游的地址。
@@ -28,7 +29,7 @@ function classify(status: number, text: string): { code: string, error: string }
 export async function probeModel(
   key: string,
   upstream: string,
-  { baseUrl = undefined as string | undefined, timeoutMs = PROBE_TIMEOUT, fetchImpl = globalThis.fetch } = {},
+  { baseUrl = undefined as string | undefined, timeoutMs = PROBE_TIMEOUT, signal = null as AbortSignal | null, fetchImpl = globalThis.fetch } = {},
 ): Promise<SensenovaProbeResult> {
   const base = normalizeBase(baseUrl ?? '');
   const started = performance.now();
@@ -42,7 +43,8 @@ export async function probeModel(
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       // 只问一个字：这是可用性判定，不是能力评测，越省额度越好。
       body: JSON.stringify({ model: upstream, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
-      signal: AbortSignal.timeout(timeoutMs),
+      // 外部 signal（「停止检测」）与单请求超时组合：任一触发都掐断请求。
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     });
     const text = await response.text().catch(() => '');
     if (!response.ok) {
@@ -61,6 +63,8 @@ export async function probeModel(
   } catch (error) {
     const name = (error as Error)?.name;
     if (name === 'TimeoutError') return fail('timeout', `超过 ${Math.round(timeoutMs / 1000)} 秒没有响应`);
+    // 手动停止掐断的请求不算结论（保留该模型上一次的判定），调用方按 code 过滤。
+    if (name === 'AbortError') return fail('stopped', '检测被手动停止');
     const message = (error as Error & { cause?: { code?: string } })?.cause?.code || (error as Error)?.message || '请求失败';
     return fail('network', `网络不可达：${message}`);
   }
@@ -88,10 +92,12 @@ export async function validateKey(
 export async function probeAll(
   key: string,
   models: SensenovaModel[],
-  { baseUrl, only = null as string[] | null, timeoutMs } = {},
+  { baseUrl, only = null as string[] | null, timeoutMs, concurrency = 6, shouldStop = null as (() => boolean) | null, signal = null as AbortSignal | null } = {},
 ) {
   const wanted = only && only.length ? new Set(only) : null;
   const results: Record<string, SensenovaProbeResult> = {};
+  // 图像生成模型不走文本端点，直接给「不适用」结论，不占网络并发位。
+  const chatTargets: SensenovaModel[] = [];
   for (const model of models) {
     if (wanted && !wanted.has(model.upstream)) continue;
     if (model.chatProbe === false) {
@@ -102,7 +108,16 @@ export async function probeAll(
       };
       continue;
     }
-    results[model.upstream] = await probeModel(key, model.upstream, { baseUrl, timeoutMs });
+    chatTargets.push(model);
   }
+  // 之前是 for-await 串行：9 个模型逐个等超时，一轮要拖上几分钟。
+  // 现在与 OpenCode 探测同一套并发池口径（默认 6，调用方可调）。
+  // 「停止检测」双通道：shouldStop 跳过未开始的；signal 直接掐断在跑的请求——
+  // 被掐断的模型不写结论（保留上一次判定），而不是记成「网络不可达」。
+  await runWithConcurrency(chatTargets, concurrency, async model => {
+    if (shouldStop?.()) return;
+    const result = await probeModel(key, model.upstream, { baseUrl, timeoutMs, signal });
+    if (result.code !== 'stopped') results[model.upstream] = result;
+  });
   return results;
 }
