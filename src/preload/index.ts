@@ -26,6 +26,11 @@ const api = {
   onOpenSettings: (callback: () => void): void => {
     ipcRenderer.on('open-settings', () => callback())
   },
+  // 退出确认：主进程在 before-quit 时请求页面弹 Naive UI 确认框，
+  // 页面点完按钮经 quit-confirm / quit-cancel 动作回话。
+  onQuitRequest: (callback: (payload: { bridgeCount: number, target: string }) => void): void => {
+    ipcRenderer.on('quit-request', (_event, payload) => callback(payload))
+  },
 }
 
 export type Bridge = typeof api

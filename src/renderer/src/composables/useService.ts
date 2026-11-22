@@ -47,6 +47,8 @@ export interface NoticeItem {
   kind: ToastKind
   /** epoch ms */
   at: number
+  /** 来源标识：哪条接入线（日日新 / AtomCode）产生的通知。系统级通知不标。 */
+  source?: string
   /** 原文/细节：CLI 原始输出、接口返回体等。 */
   detail?: string
   read: boolean
@@ -67,6 +69,7 @@ function loadNotices(): NoticeItem[] {
         text: String(item.text),
         kind: (item.kind === 'ok' || item.kind === 'error' ? item.kind : 'info') as ToastKind,
         at: Number(item.at) || Date.now(),
+        source: typeof item.source === 'string' && item.source ? item.source : undefined,
         detail: typeof item.detail === 'string' ? item.detail : undefined,
         read: item.read === true,
       }))
@@ -80,10 +83,10 @@ function persistNotices() {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(notices.value.slice(-HISTORY_MAX))) } catch { /* 隐私模式忽略 */ }
 }
 
-function recordNotice(text: string, kind: ToastKind, detail?: string) {
+function recordNotice(text: string, kind: ToastKind, detail?: string, source?: string) {
   // 详情和正文一样时不算"含详情"：一条「已经是当前写入目标。」点开还是同一句话，纯噪音。
   const raw = String(detail || '').trim()
-  notices.value = [...notices.value, { id: ++noticeSeq, text, kind, at: Date.now(), detail: raw && raw !== text ? raw : undefined, read: false }].slice(-HISTORY_MAX)
+  notices.value = [...notices.value, { id: ++noticeSeq, text, kind, at: Date.now(), source, detail: raw && raw !== text ? raw : undefined, read: false }].slice(-HISTORY_MAX)
   persistNotices()
 }
 
@@ -113,7 +116,7 @@ export function useNotices() {
   return { notices: noticeFeed, unreadCount, markNoticeRead, markAllNoticesRead, clearNotices }
 }
 
-export function note(text: string, kind: '' | 'ok' | 'error' = '', opts?: { stream?: string, detail?: string }) {
+export function note(text: string, kind: '' | 'ok' | 'error' = '', opts?: { stream?: string, detail?: string, source?: string }) {
   const body = String(text || '').trim()
   // note('') 是「清掉旧提示」的老语义（callAction 每次默认调用它），不该弹出空通知。
   if (!body) return
@@ -125,7 +128,7 @@ export function note(text: string, kind: '' | 'ok' | 'error' = '', opts?: { stre
   const timer = toastTimers.get(id)
   if (timer) window.clearTimeout(timer)
   toastTimers.set(id, window.setTimeout(() => dismissToast(id), TTL[level]))
-  if (!opts?.stream) recordNotice(body, level, opts?.detail)
+  if (!opts?.stream) recordNotice(body, level, opts?.detail, opts?.source)
 }
 
 export function dismissToast(id: number) {
@@ -228,7 +231,8 @@ function phaseText(): string {
 const OP_LABEL: Record<string, string> = {
   import: '写入配置', 'ac-import': '写入配置', 'sn-import': '写入配置',
   remove: '移除配置', 'ac-remove': '移除配置', 'sn-remove': '移除配置',
-  probe: '检测模型', 'sn-probe': '检测模型', 'oc-probe-selected': '检测选中的模型',
+  probe: '检测模型', 'sn-probe': '检测模型', 'ac-probe': '检测模型', 'oc-probe-selected': '检测选中的模型',
+  'probe-stop': '停止检测',
   refresh: '读取模型目录', 'ac-refresh': '读取免费模型目录',
   restart: '重启隔离模型服务',
   'service-stop': '停止本地服务', 'service-start': '启动本地服务',
@@ -272,7 +276,7 @@ export function blockedReason(name: string, value?: unknown): string | null {
   if (name === 'pick-target-path') return null
   if (s.phase !== 'ready') return phaseText() + '，请稍候。'
   if (name === 'target') {
-    if (!['workbuddy', 'dsh', 'mofang'].includes(value as string)) return '无效的写入目标。'
+    if (!['workbuddy', 'dsh', 'mofang', 'qoder', 'trae'].includes(value as string)) return '无效的写入目标。'
     // 这里**不**比较「是不是当前目标」：页面会先做乐观更新把 state.target 改成新值，
     // 再调用 run()，此刻 s.target 已经是新值了——一比就永远相等，切换被自己拦下。
     // 幂等本来就由服务端负责（同值直接返回 changed:false）。
@@ -305,12 +309,16 @@ function shortModel(id?: string): string {
 
 export const currentOp = computed<OpInfo | null>(() => {
   const s = state.value
-  const probe = (s.probe || {}) as { running?: boolean, current?: string, total?: number, done?: number }
+  const probe = (s.probe || {}) as { running?: boolean, current?: string, total?: number, done?: number, concurrency?: number }
   if (probe.running) {
     const total = Number(probe.total) || 0
     const done = Number(probe.done) || 0
     const current = shortModel(probe.current)
-    const detail = total ? done + '/' + total + (current ? ' · ' + current : '') : (current || undefined)
+    const parts = []
+    if (total) parts.push(done + '/' + total)
+    if (probe.concurrency) parts.push('并行 ' + probe.concurrency)
+    if (current) parts.push(current)
+    const detail = parts.length ? parts.join(' · ') : undefined
     return { label: '检测模型', detail, ratio: total ? Math.min(1, done / total) : undefined }
   }
   if (pendingLocal.value) return { label: opLabel(pendingLocal.value) }

@@ -1,6 +1,34 @@
 <template>
   <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="overrides" class="app-root">
-    <div class="app-shell">
+    <!-- 启动页与主界面是「页面切换」而不是「遮罩叠加」：整页不透明背景 + mode="out-in"
+       （旧页面先淡出、新页面再淡入，两层不同时存在），从根上消除遮罩式方案的闪烁。 -->
+  <Transition name="page-fade" mode="out-in">
+    <!-- 启动页：只列墨桥自身的启动项（OpenCode 运行时与模型检测是功能级动作，
+         懒加载各自负责）；失败时步骤变红、给出原因，可关闭引导回主页面重试。 -->
+    <div v-if="bootOverlay" key="boot" class="boot-page" role="status">
+      <div class="quit-card boot-card">
+        <i class="boot-spinner big" :class="{ fail: bootFailed }" aria-hidden="true" />
+        <b>{{ bootFailed ? '启动失败' : '墨桥正在启动' }}</b>
+        <ul class="boot-steps">
+          <li v-for="st in bootSteps" :key="st.key" :class="st.status">
+            <span class="bs-icon" aria-hidden="true">
+              <svg v-if="st.status === 'done'" viewBox="0 0 16 16" width="10" height="10"><path d="M3.5 8.5 L7 12 L12.5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <template v-else-if="st.status === 'failed'">!</template>
+            </span>
+            <span class="bs-label">{{ st.label }}</span>
+            <span class="bs-detail">{{ st.detail }}</span>
+          </li>
+        </ul>
+        <div v-if="!bootFailed" class="boot-track wide" :class="{ indeterminate: bootPercent >= 100 }" aria-hidden="true"><i class="boot-fill" :style="bootPercent >= 100 ? undefined : { width: bootPercent + '%' }" /></div>
+        <span v-if="!bootFailed" class="boot-time">{{ bootTimeHint }}</span>
+        <span v-if="!bootFailed" class="boot-hint">全部就绪后自动进入主页面</span>
+        <div v-else class="wc-actions">
+          <NButton size="small" @click="dismissBoot">关闭引导</NButton>
+          <NButton size="small" type="primary" @click="restartFromBoot">重试启动</NButton>
+        </div>
+      </div>
+    </div>
+    <div v-else key="main" class="app-shell">
       <header class="app-header">
         <div class="app-brand" title="墨桥 MoBridge · 墨坊家族">
           <svg class="brand-mark" viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
@@ -11,13 +39,16 @@
             <circle cx="16" cy="27.5" r="1.6" fill="currentColor" opacity=".5" />
             <circle cx="21" cy="27.5" r="1.6" fill="currentColor" opacity=".7" />
           </svg>
-          <span class="brand-name">墨桥</span>
-          <span class="brand-en">MoBridge</span>
+          <span class="brand-copy">
+            <span class="brand-name">墨桥</span>
+            <span class="brand-en">MoBridge</span>
+          </span>
         </div>
         <nav class="app-tabs" role="tablist" aria-label="接入视图">
-          <button v-for="v in views" :key="v.key" type="button" role="tab"
-            class="app-tab" :class="{ active: active === v.key }" :aria-pressed="active === v.key"
-            @click="active = v.key">{{ v.label }}</button>
+          <NButton v-for="v in views" :key="v.key" size="small" role="tab"
+            class="app-tab" :class="{ active: active === v.key }" :quaternary="active !== v.key"
+            :aria-pressed="active === v.key"
+            @click="active = v.key">{{ v.label }}</NButton>
         </nav>
         <div class="header-right">
           <dl class="status-cluster" aria-label="当前状态">
@@ -26,13 +57,13 @@
               <dd :class="phaseInfo.kind">
                 <!-- 状态即操作：显示什么状态，这里就能做什么。
                      运行中点「停止」（弹确认）；已停止点「启动」；其余状态只读。 -->
-                <button v-if="phaseInfo.kind !== 'error'" class="svc-toggle" type="button"
+                <NButton v-if="phaseInfo.kind !== 'error'" size="tiny" quaternary class="svc-toggle"
                   :disabled="serviceStarting || (phaseInfo.kind as string) === 'warn'"
                   :title="serviceStopped ? '启动本地服务：重新监听端口并检测模型' : '停止本地服务：转发口不再响应，配置保留'"
                   @click="serviceStopped ? doServiceStart() : (stopConfirm = true)">
                   <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
                   <span class="svc-action">{{ svcAction }}</span>
-                </button>
+                </NButton>
                 <template v-else>
                   <i class="sc-dot" :class="phaseInfo.kind" />{{ phaseInfo.text }}
                 </template>
@@ -48,7 +79,7 @@
             </div>
           </dl>
           <NotificationCenter />
-          <button class="settings-btn" type="button" title="打开设置" @click="settingsOpen = true">
+          <NButton size="small" class="settings-btn" title="打开设置" @click="settingsOpen = true">
             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none"
               stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <path d="M4 7h16M4 17h16" />
@@ -56,12 +87,13 @@
               <circle cx="15" cy="17" r="2.3" fill="var(--surface)" />
             </svg>
             <span>设置</span>
-          </button>
+          </NButton>
           <div class="theme-control" role="group" aria-label="界面主题">
-            <button v-for="t in themeOptions" :key="t.key" type="button"
-              class="theme-btn" :class="{ active: choice === t.key }" :aria-pressed="choice === t.key"
+            <NButton v-for="t in themeOptions" :key="t.key" size="tiny"
+              class="theme-btn" :quaternary="choice !== t.key" :type="choice === t.key ? 'primary' : 'default'"
+              :aria-pressed="choice === t.key"
               :title="t.key === 'system' ? '跟随系统设置' : t.key === 'light' ? '始终使用浅色界面' : '始终使用深色界面'"
-              @click="set(t.key)">{{ t.label }}</button>
+              @click="set(t.key)">{{ t.label }}</NButton>
           </div>
         </div>
       </header>
@@ -75,17 +107,48 @@
         <p class="stop-note">停止后：<b>127.0.0.1 的转发口不再响应</b>，已写入 WorkBuddy / DSH / 墨坊 的模型会连接失败，直到重新启动服务。</p>
         <p class="stop-note">配置<b>不会</b>被移除——客户端里的条目原样保留，重新启动即恢复。确实想清掉条目，请用各接入页的「移除配置」。</p>
       </ConfirmModal>
-      <OpProgress />
-      <ToastHost />
     </div>
+    </Transition>
+    <!-- 退出遮罩：点关闭后主进程要停服务、摘条目（可选）、释放端口，
+         至少亮 3 秒，让"退出发生了"这件事被看见。放在页面切换层之外：
+         退出时主界面仍在渲染，遮罩只是盖在上面。 -->
+    <Transition name="overlay-fade">
+      <div v-if="shuttingDown" class="quit-overlay" role="alert">
+        <div class="quit-card">
+          <i class="boot-spinner" aria-hidden="true" />
+          <b>正在退出墨桥…</b>
+          <span>停止后台服务、释放本机转发口端口，马上就好。</span>
+        </div>
+      </div>
+    </Transition>
+    <!-- 退出确认：每次退出都问一次。转发口一关，客户端里指向它的模型就失联，
+         这个后果必须让用户在退出前看到；勾选框决定是否顺手摘掉墨桥条目。 -->
+    <NModal v-model:show="quitDialogShow" :auto-focus="false" transform-origin="center" class="quit-modal-wrap">
+      <div class="quit-modal">
+        <b class="qm-title">退出墨桥</b>
+        <p class="qm-body">退出后本机转发口将关闭、端口释放。
+          <template v-if="quitDialog?.bridgeCount"><b>{{ targetLabel(quitDialog.target) }}里墨桥写入的 {{ quitDialog.bridgeCount }} 个模型将无法使用</b>（日日新直连的不受影响）。</template>
+          <template v-else>当前目标里没有墨桥写入的条目，退出不影响任何客户端配置。</template>
+        </p>
+        <NCheckbox v-if="quitDialog?.bridgeCount" v-model:checked="quitRemove" class="quit-remove">
+          同时移除墨桥写入的 {{ quitDialog.bridgeCount }} 个条目（只摘墨桥的，你自己的配置不动）
+        </NCheckbox>
+        <div class="qm-actions">
+          <NButton size="small" @click="quitCancel">取消</NButton>
+          <NButton size="small" :type="quitRemove ? 'error' : 'primary'" @click="quitOk">{{ quitRemove ? '移除配置并退出' : '退出' }}</NButton>
+        </div>
+      </div>
+    </NModal>
+    <OpProgress />
+    <ToastHost />
   </NConfigProvider>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, type Component } from 'vue'
-import { NConfigProvider, NButton, darkTheme, type GlobalThemeOverrides } from 'naive-ui'
+import { NConfigProvider, NButton, NCheckbox, NModal, darkTheme, type GlobalThemeOverrides } from 'naive-ui'
 import { useTheme } from './composables/useTheme'
-import { useService, inspectTargets, run, note } from './composables/useService'
+import { useService, inspectTargets, run, note, callAction } from './composables/useService'
 import { notifyFailure } from './utils/errors'
 import { targetLabel, inspectionOf } from './utils/target'
 import ToastHost from './components/ToastHost.vue'
@@ -134,11 +197,16 @@ const overrides = computed<GlobalThemeOverrides>(() => ({
     // 同一排按钮的高度与圆角必须完全一致，肉眼才会把它们当一组。
     heightSmall: '28px',
     fontWeight: '500',
+    // Naive 默认的水平 padding（small≈14px/tiny≈10px）比顶栏原来的原生按钮宽不少，
+    // 顶栏右侧一排换 NButton 后总宽溢出、主题切换被挤出窗口（已实测）。压回紧凑值。
+    paddingLeftSmall: '12px', paddingRightSmall: '12px',
+    paddingLeftTiny: '8px', paddingRightTiny: '8px',
     // 默认按钮（深浅两套主题统一）：透明底 + 描边，与顶栏「设置」按钮同族。
     // Naive 自带的底色——深色是半透明白、浅色是浅灰实心——叠在页面上都读成
     // 「灰色实心块」，跟顶栏描边按钮完全是两种气质，用户反馈的"突兀"就是它。
-    // 浅色的取值直接抄 CSS 变量（--hover / --line / --muted / --text / --disabled-text），
-    // 连 hover 行为（浅蓝底 + 深描边 + 字变深）都和 .settings-btn 一致。
+    //
+    // 浅色的字色/边框必须够深：tiny 描边按钮叠在白底上，灰字浅边会被读成
+    // "整排都是禁用"，只有实心主按钮醒目（用户反馈的"按钮样式很奇怪"就是它）。
     ...(isDark.value ? {
       color: 'transparent',
       colorHover: 'rgba(255, 255, 255, .06)',
@@ -148,28 +216,30 @@ const overrides = computed<GlobalThemeOverrides>(() => ({
       borderHover: '1px solid rgba(255, 255, 255, .50)',
       borderPressed: '1px solid rgba(255, 255, 255, .50)',
       borderFocus: '1px solid rgba(255, 255, 255, .30)',
+      // 深色的 45% 白禁用字在 11px 按钮上确实看不清（用户反馈）——提到 58%。
+      textColorDisabled: 'rgba(255, 255, 255, .58)',
     } : {
       color: 'transparent',
-      colorHover: '#f0f4fa',
-      colorPressed: '#e6ecf6',
+      colorHover: '#eef3fa',
+      colorPressed: '#e2eaf5',
       colorFocus: 'transparent',
-      border: '1px solid #d8d8dd',
-      borderHover: '1px solid #61616a',
-      borderPressed: '1px solid #61616a',
-      borderFocus: '1px solid #d8d8dd',
-      textColor: '#61616a',
-      textColorHover: '#242426',
-      textColorPressed: '#242426',
-      textColorFocus: '#61616a',
-      textColorDisabled: '#9a9aa2',
+      border: '1px solid #b6bac3',
+      borderHover: '1px solid #55555f',
+      borderPressed: '1px solid #55555f',
+      borderFocus: '1px solid #b6bac3',
+      textColor: '#33333b',
+      textColorHover: '#17171c',
+      textColorPressed: '#17171c',
+      textColorFocus: '#33333b',
+      textColorDisabled: '#82828c',
     }),
   },
 }))
 
 const views: Array<{ key: string, label: string, comp: Component }> = [
-  { key: 'opencode', label: 'OpenCode 接入', comp: OpenCodeView },
-  { key: 'atomcode', label: 'AtomCode 接入', comp: AtomCodeView },
-  { key: 'sensenova', label: '日日新接入', comp: SensenovaView },
+  { key: 'opencode', label: 'OpenCode', comp: OpenCodeView },
+  { key: 'atomcode', label: 'AtomCode', comp: AtomCodeView },
+  { key: 'sensenova', label: '日日新', comp: SensenovaView },
 ]
 const active = ref('opencode')
 const activeComp = computed(() => views.find(v => v.key === active.value)?.comp ?? OpenCodeView)
@@ -195,6 +265,122 @@ try { window.bridge.onOpenSettings(() => { settingsOpen.value = true }) } catch 
 const stopConfirm = ref(false)
 const serviceStopped = computed(() => state.value.phase === 'stopped')
 const serviceStarting = computed(() => state.value.phase === 'starting')
+// 主进程广播的退出中标记（publish() 在 quitting 时带上）：遮罩的开关。
+const shuttingDown = computed(() => (state.value as { shuttingDown?: boolean }).shuttingDown === true)
+// ── 启动全屏遮罩：把"软件此刻在干什么"逐项列出来 ──
+// bootProbing 标记"这次检测属于启动自动检测"：从 starting/reading 进入 ready 后置位，
+// 检测结束即清掉——用户之后手动点「检测全部」不该再弹启动遮罩（那个有 OpProgress）。
+const bootProbing = ref(false)
+watch(() => state.value.phase, (phase, old) => {
+  if (phase === 'ready' && (old === 'starting' || old === 'reading')) bootProbing.value = true
+})
+watch(() => (state.value.probe as { running?: boolean } | undefined)?.running, running => {
+  if (running === false) bootProbing.value = false
+})
+// 启动遮罩只列墨桥自身的启动项：OpenCode 运行时与模型检测是"功能级"动作
+// （懒加载 + OpProgress 各自负责），不属于"软件能不能用"的启动闸门。
+const bootDismissed = ref(false)
+const bootFailed = computed(() => state.value.phase === 'error')
+// 服务是否曾经就绪过：就绪过之后再进入 reading（点刷新目录、切目标体检）或 error，
+// 不再上全屏启动遮罩——否则运行中每次重读目录都会"闪一下全屏"（用户已指出）。
+// 运行中的重读进度走底部浮层（OpProgress），错误走页面内状态面板与通知。
+const everReady = ref(false)
+watch(() => state.value.phase, phase => { if (phase === 'ready') everReady.value = true }, { immediate: true })
+const bootOverlay = computed(() => {
+  if (bootDismissed.value || everReady.value) return false
+  const phase = state.value.phase
+  return phase === 'starting' || phase === 'reading' || phase === 'error'
+})
+const bootSteps = computed(() => {
+  const s = state.value
+  const statusText = (status: string) => (status === 'done' ? '完成' : status === 'active' ? '进行中' : '待开始')
+  const failed = s.phase === 'error'
+  const steps: Array<{ key: string, label: string, status: 'pending' | 'active' | 'done' | 'failed', detail: string }> = [
+    {
+      key: 'service', label: '启动后台服务与转发口（127.0.0.1:31280 / 31282）',
+      status: failed ? 'failed' : s.phase === 'starting' ? 'active' : 'done',
+      detail: failed ? (s.message || '启动失败') : '',
+    },
+    {
+      key: 'config', label: '加载墨桥本地配置与写入目标',
+      status: failed ? 'pending' : s.phase === 'starting' ? 'active' : 'done', detail: '',
+    },
+  ]
+  for (const st of steps) if (st.status !== 'active') st.detail = st.detail || statusText(st.status === 'failed' ? 'active' : st.status)
+  return steps
+})
+const bootPercent = computed(() => {
+  const steps = bootSteps.value
+  const done = steps.filter(st => st.status === 'done').length
+  return Math.round(done / steps.length * 100)
+})
+// ── 启动耗时与预计 ────────────────────────────────────────────────────────
+// 干等最糟心：已耗时实时走秒；预计耗时用「上次启动的真实总耗时」自动校准
+// （存 localStorage），首次没有记录时给保守默认 12 秒。
+const BOOT_MS_KEY = 'mobridge-boot-ms'
+const bootElapsedSec = ref(0)
+const bootExpectedSec = ref(12)
+let bootHasRecord = false
+let bootTimer: number | undefined
+try {
+  const saved = Number(localStorage.getItem(BOOT_MS_KEY))
+  if (Number.isFinite(saved) && saved > 0) { bootHasRecord = true; bootExpectedSec.value = Math.max(1, Math.round(saved / 1000)) }
+} catch { /* 隐私模式忽略 */ }
+watch(bootOverlay, show => {
+  if (show) {
+    // 冷启动时页面加载那一刻遮罩可能已经是显示状态——没有"变化"就不会触发
+    // 非 immediate 的 watch，计时器永远不启动，耗时停在 0.0（已实测）。
+    // 1 秒整秒：0.5 秒步进配一位小数显示会跳出 0.5/1.5 这种奇怪数值（用户指出）。
+    bootElapsedSec.value = 0
+    clearInterval(bootTimer)
+    bootTimer = window.setInterval(() => { bootElapsedSec.value += 1 }, 1000)
+    return
+  }
+  // 遮罩消失（成功就绪）：把本次总耗时写回，下次的"预计"就用真实值。
+  clearInterval(bootTimer)
+  if (!bootFailed.value && bootElapsedSec.value >= 1) {
+    const ms = Math.round(bootElapsedSec.value * 1000)
+    try { localStorage.setItem(BOOT_MS_KEY, String(ms)) } catch { /* 隐私模式忽略 */ }
+    bootExpectedSec.value = Math.max(1, Math.round(ms / 1000))
+    bootHasRecord = true
+  }
+}, { immediate: true })
+const bootTimeHint = computed(() => {
+  // 超过预计时间的窗口期（探测/目录收尾）：文案切换为宽慰语气，不再报一个已经失效的预计值。
+  const over = bootHasRecord && bootElapsedSec.value > bootExpectedSec.value
+  return over
+    ? `已耗时 ${bootElapsedSec.value} 秒 · 比上次启动慢一些，仍在工作中`
+    : `已耗时 ${bootElapsedSec.value} 秒 · 预计约 ${bootExpectedSec.value} 秒${bootHasRecord ? '（按上次启动）' : ''}`
+})
+// 启动失败三件事：步骤变红说明原因、铃铛发一条通知、提供"关闭引导"让用户回到主页面
+// （主页面本身就有错误状态与重试入口，遮罩不该把用户锁死）。
+let bootErrorNotified = false
+watch(bootFailed, failed => {
+  if (!failed || bootErrorNotified) return
+  bootErrorNotified = true
+  note('启动失败：' + (state.value.message || '原因未知，详见数据目录 app.log'), 'error')
+}, { immediate: true })
+function dismissBoot() { bootDismissed.value = true }
+function restartFromBoot() { bootDismissed.value = false; void run('restart') }
+// ── 退出确认（渲染层组件弹窗）：主进程 before-quit 发 quit-request 过来 ──
+const quitDialog = ref<{ bridgeCount: number, target: string } | null>(null)
+const quitRemove = ref(false)
+const quitDialogShow = computed({ get: () => quitDialog.value != null, set: v => { if (!v) quitDialog.value = null } })
+let quitRequestSeen = false
+window.bridge?.onQuitRequest?.(payload => {
+  quitDialog.value = payload
+  quitRemove.value = payload.bridgeCount > 0
+  quitRequestSeen = true
+})
+async function quitOk() {
+  const payload = quitRemove.value ? { remove: true } : { remove: false }
+  quitDialog.value = null
+  await callAction('quit-confirm', payload)
+}
+async function quitCancel() {
+  quitDialog.value = null
+  if (quitRequestSeen) await callAction('quit-cancel')
+}
 /** 状态位上动作词的措辞：启动中过程本身也是一种状态，不能和动作词打架。 */
 const svcAction = computed(() => {
   if (serviceStarting.value) return '启动中…'
@@ -222,23 +408,22 @@ async function doServiceStart() {
   background: var(--surface);
 }
 .app-brand { display: flex; align-items: center; gap: 7px; color: var(--accent-text); min-width: 0; }
-.brand-name { font-size: 15px; font-weight: 700; color: var(--text); }
-.brand-en { font-size: 11px; color: var(--muted); }
+/* 品牌名上下两行：中文在上、英文小字在下，横向占宽比"墨桥 MoBridge"一行省一半多。 */
+.brand-copy { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-name { font-size: 14px; font-weight: 700; color: var(--text); }
+.brand-en { font-size: 9.5px; color: var(--muted); letter-spacing: .02em; }
 .app-tabs { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
-.app-tab {
-  border: 0; background: transparent; color: var(--muted); font-size: 13px;
-  padding: 6px 13px; border-radius: 7px; cursor: pointer; white-space: nowrap;
-}
-.app-tab:hover { background: var(--hover); color: var(--text); }
+/* tab 换成 NButton（quaternary）：尺寸与字重在此统一，选中态底色交给 .active。 */
+.app-tab { font-size: 13px; padding: 6px 13px; border-radius: 7px; white-space: nowrap; }
 .app-tab.active { background: var(--selected); color: var(--accent-text); font-weight: 650; }
 .theme-control { display: inline-flex; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; flex: 0 0 auto; }
-.theme-btn { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
-.theme-btn.active { background: var(--selected); color: var(--accent-text); font-weight: 600; }
+.theme-btn { padding: 3px 10px; border-radius: 6px; }
 .header-right { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 /* 状态簇：不用分组框，只用竖线分隔——顶栏上已经有主题切换那个带框的分段控件，
-   再来一个框就太吵了。 */
+   再来一个框就太吵了。竖向一律 center 对齐：dt「服务」、状态点、状态词、动作胶囊
+   四种高度混排，baseline 对齐会让胶囊看起来"沉"下去（用户已指出不对齐）。 */
 .status-cluster { display: flex; align-items: center; gap: 0; margin: 0; }
-.sc-item { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; font-size: 11.5px; }
+.sc-item { display: flex; align-items: center; gap: 5px; padding: 0 10px; font-size: 11.5px; }
 .sc-item + .sc-item { border-left: 1px solid var(--subtle-line); }
 .sc-item dt { color: var(--disabled-text); font-size: 11px; }
 .sc-item dd { margin: 0; display: inline-flex; align-items: center; gap: 5px; color: var(--text); font-weight: 550; }
@@ -255,11 +440,9 @@ async function doServiceStart() {
   .status-cluster { display: none; }
 }
 .settings-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  border: 1px solid var(--line); background: transparent; color: var(--muted);
-  font-size: 12px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+  border-radius: 8px;
 }
-.settings-btn:hover, .settings-btn.active { background: var(--hover); color: var(--text); border-color: var(--muted); }
+.settings-btn:hover { background: var(--hover); color: var(--text); border-color: var(--muted); }
 .stop-note { margin: 0 0 8px; font-size: 12px; line-height: 1.65; color: var(--text); }
 
 /* ── 标题栏并入接入行 ─────────────────────────────────────────────────────
@@ -273,8 +456,17 @@ async function doServiceStart() {
    最大化就全废了（曾把 .app-tabs 整个标成 no-drag，被用户抓到）。
    app-region 的区域算法是：drag 的矩形整块生效，只有显式 no-drag 的
    后代才会从中挖洞，所以容器不声明即整块可拖。 */
-.app-header { -webkit-app-region: drag; }
-.app-header { padding-right: calc(100vw - (env(titlebar-area-x, 0px) + env(titlebar-area-width, 100vw))); }
+/* 标题栏并入接入行：titleBarStyle hidden + 原生 overlay 按钮画在右上角，
+   整条 header 是拖拽区（app-region: drag），可点元素逐个声明 no-drag。
+   右侧让位用固定值：env(titlebar-area-*) 在 DPI 缩放下返回物理像素，
+   与 100vw（CSS 像素）混算会错位，主题切换整个被窗口控制按钮盖住（已实测）。
+   Windows 11 三枚按钮约 138px，留 150px。
+   注意 no-drag 只声明到「具体控件」，绝不能盖住 flex:1 撑满头部中段的
+   .app-tabs 容器——那正是用户眼里的"标题栏空白处"，盖住了拖动和双击
+   最大化就全废了（曾把 .app-tabs 整个标成 no-drag，被用户抓到）。
+   app-region 的区域算法是：drag 的矩形整块生效，只有显式 no-drag 的
+   后代才会从中挖洞，所以容器不声明即整块可拖。 */
+.app-header { -webkit-app-region: drag; padding-right: 150px; }
 .app-tab, .theme-control, .notice-root, .svc-toggle, .settings-btn, .status-cluster { -webkit-app-region: no-drag; }
 
 /* 服务状态即操作：状态词是展示，尾部动作词才是可点的部分。 */
@@ -307,4 +499,86 @@ async function doServiceStart() {
 }
 /* 氛围层之上才是真正的内容：玻璃卡既能 blur 到光斑，又不会盖住可点元素。 */
 .app-body > *:not(.app-ambient) { position: relative; z-index: 1; }
+
+/* ── 启动遮罩步骤清单 + 转圈 ── */
+.boot-spinner {
+  flex: 0 0 auto; width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent-text);
+  animation: boot-spin .8s linear infinite;
+}
+.boot-spinner.big { width: 26px; height: 26px; border-width: 3px; }
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+.boot-card { gap: 12px; min-width: 380px; }
+.boot-steps { list-style: none; margin: 0; padding: 0; width: 100%; display: grid; gap: 7px; }
+.boot-steps li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.boot-steps li.active { color: var(--text); font-weight: 600; }
+.boot-steps li.done { color: var(--text); }
+.boot-steps li.pending { opacity: .6; }
+.boot-steps li.failed { color: var(--error-text, #d03050); font-weight: 600; }
+.boot-steps li.failed .bs-icon { border-color: var(--error-text, #d03050); color: var(--error-text, #d03050); }
+.boot-spinner.fail { border-top-color: var(--error-text, #d03050); }
+.bs-icon {
+  flex: 0 0 16px; width: 16px; height: 16px; border-radius: 50%; text-align: center; line-height: 16px;
+  font-size: 11px; border: 1px solid var(--line); color: var(--success-text);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.boot-steps li.done .bs-icon { border-color: transparent; background: var(--success-text); color: #fff; }
+.boot-steps li.active .bs-icon { border-color: var(--accent-text); background: var(--hover); }
+.bs-label { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bs-detail { flex: 1 1 auto; text-align: right; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boot-track { width: 100%; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.boot-track.wide { width: 100%; }
+.boot-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent-text); transition: width .5s ease; }
+/* 步骤全部完成但服务还没就绪的窗口期（探测/目录在跑）：进度条切成流动条纹的不确定态，
+   告诉用户"仍在工作"，而不是一条静止的满格让人以为卡死了。 */
+.boot-track.indeterminate .boot-fill {
+  width: 100%;
+  background: repeating-linear-gradient(45deg,
+    var(--accent-text) 0 10px,
+    color-mix(in srgb, var(--accent-text) 55%, transparent) 10px 20px);
+  animation: boot-stripes .8s linear infinite;
+}
+@keyframes boot-stripes { to { background-position: 28px 0; } }
+.boot-time { font-size: 12px; font-weight: 650; color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.boot-hint { font-size: 11px; color: var(--muted); }
+.quit-remove { margin-top: 4px; }
+.quit-modal {
+  display: flex; flex-direction: column; gap: 10px; max-width: 480px;
+  background: var(--surface); border-radius: 14px; padding: 20px 22px;
+  border: 1px solid var(--line); box-shadow: 0 18px 48px rgba(0, 0, 0, .18);
+}
+.qm-title { font-size: 14px; color: var(--text); }
+.qm-body { margin: 0; font-size: 12px; line-height: 1.7; color: var(--muted); }
+.qm-body b { color: var(--text); }
+.qm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+/* ── 退出遮罩：收摊过程可见，而不是"点了没反应" ── */
+/* ── 启动页(页面化):与主界面是页面切换,不再是遮罩 ── */
+.boot-page {
+  position: fixed; inset: 0; z-index: 90;
+  /* 不透明底:盖住主界面,页面切换期间不存在两层透明度叠加,闪烁无从产生 */
+  background: var(--background);
+  display: flex; align-items: center; justify-content: center;
+}
+/* 页面切换:旧页淡出完、新页再淡入(mode="out-in"),两层永不同时存在 */
+.page-fade-enter-active, .page-fade-leave-active { transition: opacity .24s ease; }
+.page-fade-enter-from, .page-fade-leave-to { opacity: 0; }
+/* 遮罩的淡入淡出：<Transition name="overlay-fade"> 驱动，出现与消失都 0.28s，
+   消除遮罩与主界面之间的硬切闪烁。 */
+.overlay-fade-enter-active, .overlay-fade-leave-active { transition: opacity .28s ease; }
+.overlay-fade-enter-from, .overlay-fade-leave-to { opacity: 0; }
+.quit-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--background) 72%, transparent);
+  backdrop-filter: blur(4px);
+}
+.quit-card {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 26px 34px; border-radius: 16px; text-align: center;
+  border: 1px solid var(--line); background: var(--surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .18);
+}
+.quit-card b { font-size: 14px; color: var(--text); }
+.quit-card span { font-size: 12px; color: var(--muted); max-width: 340px; line-height: 1.6; }
 </style>

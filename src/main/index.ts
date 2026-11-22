@@ -1,7 +1,7 @@
-import { app, BrowserWindow, Menu, ipcMain, dialog, screen, shell, nativeTheme } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, dialog, screen, shell, nativeTheme, clipboard } from 'electron'
 import { fork, execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream, existsSync, type WriteStream } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { APP_NAME, DEFAULT_SERVICE_PORT, DEFAULT_ATOMCODE_PORT, isAllowedExternal } from '../shared/constants'
@@ -13,7 +13,12 @@ import { createTray, updateTrayMenu, type TrayState } from './tray'
 // 服务进程（src/service，esbuild 打包为 out/service/main.mjs）里——同一个核心
 // 既能被桌面端驱动，也能 `npm start` 单跑。
 app.setName(APP_NAME)
-app.setAppUserModelId('com.mofang.mobridge')
+// AUMID 只在打包态设置：NSIS 安装器注册的快捷方式带着这个 AUMID，任务栏/通知
+// 从快捷方式解析到墨桥图标。开发态一旦显式设 AUMID，Windows 找不到对应快捷方式
+// 就回退用 exe 内嵌图标——electron.exe 的默认原子图标会盖掉 BrowserWindow 的
+// icon 选项（窗口图标只在"没有显式 AUMID"时才被任务栏采用）。dev 下托盘图标
+// 不受影响（Tray API 直接绘制，不走 AUMID 解析），通知走 Electron 默认 AUMID。
+if (app.isPackaged) app.setAppUserModelId('com.mofang.mobridge')
 
 let window: BrowserWindow | undefined
 let tray: ReturnType<typeof createTray>
@@ -21,6 +26,9 @@ let service: ReturnType<typeof fork> | undefined
 let timer: NodeJS.Timeout | undefined
 let log: WriteStream | undefined
 let quitting = false
+// 退出确认：before-quit 里挂起，等渲染层确认弹窗经 quit-confirm/quit-cancel 回话。
+// 声明在模块级——action()（早于 before-quit 注册）也要能碰它。
+let quitResolver: ((decision: { remove: boolean } | null) => void) | null = null
 let mayQuit = false
 let actionBusy: string | false = false
 let state: ServiceState = { phase: 'starting', message: '正在启动隔离模型服务', models: [], modelResults: {} }
@@ -134,17 +142,24 @@ const titleBarColors = (dark: boolean) => ({
   symbolColor: dark ? TITLE_BAR_SYMBOL.dark : TITLE_BAR_SYMBOL.light,
 })
 
-const ACTIONS = ['refresh', 'probe', 'import', 'remove', 'system-proxy', 'restart', 'choose-config', 'find-config', 'selection', 'target',
+const ACTIONS = ['refresh', 'probe', 'probe-stop', 'import', 'remove', 'system-proxy', 'restart', 'choose-config', 'find-config', 'selection', 'target',
   // 本地服务的启停：主进程管子进程，动作名以 service- 开头与服务层动作区分。
   'service-stop', 'service-start',
   // 日日新：与上面同一套动作语义，只是作用于直连上游的那条链路。
   'sn-save-key', 'sn-clear-key', 'sn-save-base', 'sn-reset-base', 'sn-validate', 'sn-probe', 'sn-selection', 'sn-import', 'sn-remove',
   // AtomCode：多出「安装 / 登录 / 刷新目录 / 网关」四个本机动作。
   'ac-detect', 'ac-install', 'ac-login', 'ac-refresh', 'ac-save-gateway', 'ac-reset-gateway', 'ac-selection', 'ac-import', 'ac-remove',
+  // AtomCode 单模型重测：与 sn-probe 同语义，只重跑勾选的那几个模型。
+  'ac-probe',
   // 只读体检：页面切页签时重新确认「当前目标里到底有没有我们的条目」。
   'inspect-targets',
   // 写入位置：选文件/目录（主进程弹系统对话框）与只读自动定位（服务层找路径、不写入）。
   'pick-target-path', 'auto-locate-path',
+  // 退出确认（渲染层组件弹窗）与取消退出：确认框由页面用 Naive UI 呈现，
+  // 主进程在这里等决定。放在门禁之前——退出确认不属于任何"服务是否就绪"的语义。
+  'quit-confirm', 'quit-cancel',
+  // 引导式接入（Trae）：复制各类本机密钥到剪贴板（口令照旧不下发到页面）。
+  'copy-bridge-key', 'copy-sensenova-key', 'copy-atomcode-key',
   // 设置（服务侧的检测/缓存旋钮）与判定缓存清理。
   'settings', 'clear-cache'] as const
 type ActionName = (typeof ACTIONS)[number]
@@ -152,6 +167,8 @@ type ActionName = (typeof ACTIONS)[number]
 function targetName(result?: { target?: string }): string {
   if (result?.target === 'dsh') return 'DSH'
   if (result?.target === 'mofang') return '墨坊'
+  if (result?.target === 'qoder') return 'Qoder'
+  if (result?.target === 'trae') return 'Trae'
   return 'WorkBuddy'
 }
 
@@ -175,7 +192,9 @@ function activityLabel(s: TrayState): string {
 }
 
 function publish() {
-  if (window && !window.isDestroyed()) window.webContents.send('state', { ...state, actionBusy })
+  // shuttingDown 随 state 一起广播：渲染层读到就盖"正在退出"遮罩，
+  // 让停服务/释放端口的过程可见，而不是点了关闭就没反应。
+  if (window && !window.isDestroyed()) window.webContents.send('state', { ...state, actionBusy, shuttingDown: quitting })
   updateTrayMenu(tray, state as TrayState, actionBusy,
     { show: '打开控制面板', quit: `退出 ${APP_NAME}`, activity: activityLabel },
     { show: showWindow, quit: () => app.quit(), action: (name, value) => trayAction(name, value), settings: openSettings })
@@ -204,7 +223,20 @@ async function callService(name: string, body: Record<string, unknown> = {}): Pr
 }
 
 async function action(name: ActionName, value: unknown): Promise<Record<string, unknown>> {
+  // 退出确认的两条回调：渲染层的确认弹窗点完按钮回这里，唤醒 before-quit 里等决定的流程。
+  if (name === 'quit-confirm') { quitResolver?.({ remove: (value as { remove?: boolean })?.remove === true }); return {} }
+  if (name === 'quit-cancel') { quitResolver?.(null); return {} }
+  // 引导式接入（Trae）的"复制密钥"：口令照旧不下发到页面，只进剪贴板。
+  if (name === 'copy-bridge-key' || name === 'copy-sensenova-key' || name === 'copy-atomcode-key') {
+    const fileMap: Record<string, string> = { 'copy-bridge-key': 'api-key', 'copy-sensenova-key': 'sensenova.key', 'copy-atomcode-key': 'atomcode-key' }
+    const text = (await fs.readFile(path.join(dataDir, fileMap[name]), 'utf8')).trim()
+    clipboard.writeText(text)
+    return { copied: true }
+  }
   if (state.configSearch?.running) throw new Error('请等待配置查找完成')
+  // 「停止检测」必须在检测进行中可用——它正是为了中断检测而存在的，不能被
+  // 「请等待服务就绪」「检测正在进行」这类门禁拦住。直接透传给服务层。
+  if (name === 'probe-stop') return await callService('probe-stop', {})
   if (actionBusy) throw new Error('请等待当前操作完成')
   // 服务启停归主进程管（子进程在这儿），不受「服务是否 ready」的门禁约束：
   // 停止恰恰要在运行时可用；启动恰恰要在停止时才允许。
@@ -242,6 +274,8 @@ async function action(name: ActionName, value: unknown): Promise<Record<string, 
       workbuddy: 'WorkBuddy 的 models.json',
       dsh: 'DSH 数据目录（内含 profiles/）',
       mofang: '墨坊的 config.json',
+      qoder: 'Qoder 的 settings.json',
+      trae: 'Trae 的 state.vscdb（SQLite 数据库）',
     }
     if (!labels[target]) throw new Error('无效的写入目标')
     const isDir = target === 'dsh'
@@ -249,13 +283,16 @@ async function action(name: ActionName, value: unknown): Promise<Record<string, 
       title: '选择' + labels[target],
       message: isDir ? '请选择 DSH 实际使用的数据目录（下面应有 profiles 子目录）。' : '请选择该客户端实际使用的配置文件。',
       properties: isDir ? ['openDirectory'] : ['openFile'],
-      ...(isDir ? {} : { filters: [{ name: 'JSON 配置', extensions: ['json'] }] }),
+      ...(isDir ? {} : { filters: target === 'trae' ? [{ name: 'SQLite 数据库', extensions: ['*'] }] : [{ name: 'JSON 配置', extensions: ['json'] }] }),
     })
     if (selection.canceled || !selection.filePaths.length) return { canceled: true }
     return { target, path: selection.filePaths[0] }
   }
-  if ((state.phase !== 'ready' && !(name === 'system-proxy' && state.phase === 'error')) || state.probe?.running)
-    throw new Error('请等待服务启动和检测完成')
+  // 两种占位分开说：检测在跑就说检测，服务没就绪就说服务——以前混成一句
+  // "请等待服务启动和检测完成"，服务明明运行中却提"启动"，用户当成 bug 上报过。
+  if (state.probe?.running) throw new Error('模型检测正在进行，结束后才能继续')
+  if (state.phase !== 'ready' && !(name === 'system-proxy' && state.phase === 'error'))
+    throw new Error(state.phase === 'reading' ? '正在重读模型目录，请稍候' : '请等待服务就绪后再操作')
   if (name === 'system-proxy' && typeof value !== 'boolean') throw new Error('代理开关必须为布尔值')
   // 日日新的动作不需要 WorkBuddy 的 models.json，也不受「服务是否 ready」影响：
   // 它只跟用户填的 Key 和上游通不通有关。所以单独放行，不进下面那段导入流程。
@@ -278,8 +315,8 @@ async function action(name: ActionName, value: unknown): Promise<Record<string, 
   try {
     let modelsFile: string | undefined
     // Windows 上先尝试自动查找配置：找到就转成 import，没找到再让用户手动选。
-    // 这段只针对 WorkBuddy 的 models.json；DSH 与墨坊各有自己的配置文件，不走查找。
-    if (process.platform === 'win32' && state.target !== 'dsh' && state.target !== 'mofang' && (name === 'find-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
+    // 这段只针对 WorkBuddy 的 models.json；DSH / 墨坊 / Qoder / Trae 各有自己的配置文件，不走查找。
+    if (process.platform === 'win32' && state.target !== 'dsh' && state.target !== 'mofang' && state.target !== 'qoder' && state.target !== 'trae' && (name === 'find-config' || (name === 'import' && (!state.modelsFile || !(await fs.stat(state.modelsFile).catch(() => null))?.isFile())))) {
       let found = state.configSearch
       if (name === 'find-config' || !found?.candidates?.length) {
         found = await callService('find-config') as never as ServiceState['configSearch']
@@ -336,9 +373,10 @@ async function actionSensenova(name: string, value: unknown): Promise<Record<str
 async function actionAtomcode(name: string, value: unknown): Promise<Record<string, unknown>> {
   const route = name.slice(3);
   const body = route === 'save-gateway' ? { gateway: value }
-    : route === 'selection' ? { ids: value }
+    : route === 'selection' || route === 'probe' ? { ids: value }
     : {};
-  const limit = route === 'install' ? 320000 : route === 'login' ? 200000 : 60000;
+  // probe 要对每个模型真发一轮检测，比快操作久；安装与登录可能跑几分钟，超时按动作区分。
+  const limit = route === 'install' ? 320000 : route === 'login' ? 200000 : route === 'probe' ? 180000 : 60000;
   const key = (await fs.readFile(path.join(dataDir, 'api-key'), 'utf8')).trim();
   const response = await fetch(`http://127.0.0.1:${servicePort}/admin/atomcode/${route}`, {
     method: 'POST',
@@ -372,11 +410,19 @@ async function trayAction(name: string, value?: unknown) {
 function ensureWindow(): BrowserWindow {
   if (window && !window.isDestroyed()) return window
   // 按屏幕工作区自适应，让模型清单尽量铺满内容。
+  // 用户反馈窗口偏窄：左右余量从 120 收到 60，上限从 1360 提到 1560。
   const workArea = screen.getPrimaryDisplay().workArea
-  const width = Math.min(1360, Math.max(1100, workArea.width - 120))
-  const height = Math.min(900, Math.max(760, workArea.height - 100))
+  const width = Math.min(1560, Math.max(1200, workArea.width - 60))
+  const height = Math.min(940, Math.max(780, workArea.height - 80))
+  // 窗口/任务栏(运行态)图标:打包版从 resources 读(build.icon.png 经 extraResources
+  // 落在 resources/icon.png);开发模式用仓库里的原图。exe 本体的图标(桌面快捷方式/
+  // 文件管理器显示的那个)是另一回事——由 rcedit 嵌入,见 build-win.mjs 的说明。
+  const windowIcon = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(__dirname, '../../build/icon.png')
   window = new BrowserWindow({
     width, height, minWidth: 1000, minHeight: 680, title: APP_NAME,
+    ...(existsSync(windowIcon) ? { icon: windowIcon } : {}),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#f5f5f7',
     // 标题栏并入应用第一行（接入行）：原生最小化/最大化/关闭画在右上角，
     // 省掉一整条只放三个按钮的系统标题栏。高度与渲染层 .app-header 对齐。
@@ -385,6 +431,10 @@ function ensureWindow(): BrowserWindow {
     webPreferences: { preload: path.join(__dirname, '../preload/index.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   })
   window.setMenu(null)
+  // 临时诊断：把渲染进程的报错转发到主进程终端（dev 排白屏用，定位后可移除）。
+  window.webContents.on('console-message', (_event, level, message, lineNumber, sourceId) => {
+    if (level >= 2) console.log(`[renderer:${level === 3 ? 'error' : 'warn'}] ${message} @ ${sourceId.split(/[\\/]/).pop()}:${lineNumber}`)
+  })
   // 不承载远端内容：不在 Electron 里开新窗口；但官网链接（管理页/文档）
   // 需要能唤起系统浏览器，白名单内的 https 交给 shell.openExternal，其余一律拒绝。
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -475,15 +525,62 @@ else {
   // 关窗即退出：真正推下去的是 before-quit 里的收摊流程，
   // 这里留空是为了不让 Electron 的默认行为抢先退一半。
   app.on('window-all-closed', () => {})
+  // 退出三段状态机：none → confirming（页面弹确认框）→ running（收摊）。
+  // 为什么每次退出都要确认：转发口一关，客户端里指向它的模型立刻全部失联
+  // ——用户没被告知这件事，回头只会以为"客户端坏了"。确认框由渲染层用
+  // Naive UI 组件呈现（系统对话框样式突兀），带"同时移除墨桥写入的模型"勾选。
+  let quitStage: 'none' | 'confirming' | 'running' = 'none'
+  // 当前目标里走本机转发口的条目数（OpenCode / AtomCode 两线；日日新直连不受影响）。
+  function bridgeDependentCount(): number {
+    if (state.phase !== 'ready') return 0
+    const sources = state.targets?.[state.target || 'workbuddy']?.sources
+    return (sources?.opencode?.count ?? 0) + (sources?.atomcode?.count ?? 0)
+  }
+  // 摘掉走转发口的两条线（OpenCode / AtomCode）。日日新直连的条目刻意保留——
+  // 它们退出后依然可用，摘了反而是损失。失败不拦退出：条目留着下次清理。
+  async function removeBridgeEntries() {
+    try { await callService('remove') } catch { /* 服务可能已停，条目留给下次清理 */ }
+    try { await callService('atomcode/remove') } catch { /* 同上 */ }
+  }
   app.on('before-quit', event => {
     if (mayQuit) return
     event.preventDefault()
-    if (quitting) return
-    quitting = true
-    // 兜底闸：不管服务卡在检测还是运行时收尾，20 秒后一律退出。
-    // 用户点的是「关闭」，不是一个可以无限期等待的请求。
-    const watchdog = setTimeout(() => { mayQuit = true; app.exit(0) }, 20000)
-    stopService().catch(() => {}).finally(() => { clearTimeout(watchdog); mayQuit = true; app.quit() })
+    // 确认框开着或收摊已在跑：拦住重复的 quit 请求，等流程自己走完。
+    if (quitStage !== 'none') return
+    quitStage = 'confirming'
+    void (async () => {
+      // 交给渲染层弹 Naive UI 确认框；页面不在（托盘退出且从未开窗）就直接退。
+      let decision: { remove: boolean } | null = null
+      const bridgeCount = bridgeDependentCount()
+      if (window && !window.isDestroyed()) {
+        const decided = await new Promise<{ remove: boolean } | null>(resolve => {
+          quitResolver = resolve
+          window!.webContents.send('quit-request', { bridgeCount, target: state.target || 'workbuddy' })
+          // 页面 15 秒不答（卡死/后台节流）按"直接退出"走，别让用户被锁死。
+          setTimeout(() => { if (quitResolver === resolve) { quitResolver = null; resolve(null) } }, 15000)
+        })
+        quitResolver = null
+        decision = decided
+      }
+      if (!decision) { quitStage = 'none'; return }
+      // 先亮"正在退出"遮罩再动配置/服务：摘条目 + 停端口可能好几秒，
+      // 期间窗口必须明确说"在收摊"，而不是看起来像卡死。
+      quitting = true
+      state = { ...state, message: '正在退出：停止后台服务、释放本机端口…' }
+      publish()
+      const overlayShownAt = Date.now()
+      if (decision.remove) await removeBridgeEntries()
+      await stopService().catch(() => {})
+      // 收摊太快用户感知不到：遮罩至少亮 3 秒，让"退出发生了"这件事被看见。
+      const remaining = 3000 - (Date.now() - overlayShownAt)
+      if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining))
+      quitStage = 'running'
+      // 兜底闸：不管服务卡在哪一步，20 秒后一律退出。
+      const watchdog = setTimeout(() => { mayQuit = true; app.exit(0) }, 20000 - (Date.now() - overlayShownAt))
+      mayQuit = true
+      app.quit()
+      void watchdog
+    })()
   })
   app.whenReady().then(async () => {
     // 数据目录默认 MoBridge：无缝继承已保存的 API Key、

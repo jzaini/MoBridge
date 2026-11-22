@@ -3,20 +3,21 @@
     <div class="settings" role="dialog" aria-modal="true" aria-label="设置">
       <header class="settings-head">
         <h3>设置</h3>
-        <button class="settings-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+        <NButton size="small" quaternary circle class="settings-x" aria-label="关闭" @click="emit('close')">×</NButton>
       </header>
 
       <div class="settings-body">
         <nav class="settings-nav" aria-label="设置分组">
-          <button v-for="sec in SECTIONS" :key="sec.key" type="button"
-            class="settings-nav-item" :class="{ active: activeSec === sec.key }"
+          <NButton v-for="sec in SECTIONS" :key="sec.key" size="small" block
+            class="settings-nav-item" :quaternary="activeSec !== sec.key" :type="activeSec === sec.key ? 'primary' : 'default'"
+            :class="{ active: activeSec === sec.key }"
             :aria-current="activeSec === sec.key ? 'true' : undefined"
-            @click="goto(sec.key)">{{ sec.label }}</button>
+            @click="goto(sec.key)">{{ sec.label }}</NButton>
         </nav>
 
-        <div ref="panes" class="settings-panes" @scroll.passive="onPanesScroll">
+        <div ref="panes" class="settings-panes">
         <!-- 检测与缓存：服务侧旋钮 -->
-        <section class="settings-sec" data-sec="probe">
+        <section v-show="activeSec === 'probe'" class="settings-sec" data-sec="probe">
           <h4>检测与缓存</h4>
           <div v-for="f in FIELDS" :key="f.key" class="settings-row">
             <div class="settings-label">
@@ -43,7 +44,7 @@
         </section>
 
         <!-- 本地端口：写进客户端的就是这两个口，改动会自动重启本地服务 -->
-        <section class="settings-sec" data-sec="ports">
+        <section v-show="activeSec === 'ports'" class="settings-sec" data-sec="ports">
           <h4>本地端口</h4>
           <div v-for="f in PORTS" :key="f.key" class="settings-row">
             <div class="settings-label">
@@ -63,8 +64,23 @@
           </p>
         </section>
 
+        <!-- AtomCode：daemon 的授权档位，随每次对话下发，改完下一次对话就生效 -->
+        <section v-show="activeSec === 'atomcode'" class="settings-sec" data-sec="atomcode">
+          <h4>AtomCode</h4>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>授权档位</span>
+              <small>随每次对话下发给 AtomCode daemon。「构建」下模型申报动作、由接出方执行；「规划」只读不写，适合纯问答；「接受编辑」允许 daemon 直接改文件。「绕过（bypass）」不提供——那会让工具不经询问直接执行，破坏执行权边界。</small>
+            </div>
+            <div class="settings-control">
+              <NSelect size="small" :value="approvalShown" :options="APPROVAL_OPTIONS" :disabled="!serviceReady"
+                style="width: 148px" @update:value="(v: string) => onApprovalMode(v)" />
+            </div>
+          </div>
+        </section>
+
         <!-- 写入位置：三个目标的配置都可能被用户搬走，必须能看见、能改 -->
-        <section class="settings-sec" data-sec="paths">
+        <section v-show="activeSec === 'paths'" class="settings-sec" data-sec="paths">
           <h4>写入位置</h4>
           <p class="settings-tip">
             墨桥默认按固定目录找这三个客户端的配置。如果你把数据目录搬过家，请在这里指定实际位置——
@@ -97,7 +113,7 @@
         </section>
 
         <!-- 应用行为：主进程侧旋钮 -->
-        <section class="settings-sec" data-sec="app">
+        <section v-show="activeSec === 'app'" class="settings-sec" data-sec="app">
           <h4>应用行为</h4>
           <div class="settings-row">
             <div class="settings-label">
@@ -128,10 +144,20 @@
                 @update:value="(v: boolean) => patchApp({ startHidden: v })" />
             </div>
           </div>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>切换目标时自动搬走</span>
+              <small>打开后切写入目标会摘掉旧目标里墨桥的条目、并把当前勾选写进新目标。默认关：切目标只改"往哪写"，清理用各页「移除配置」、写入用「写入配置」。</small>
+            </div>
+            <div class="settings-control">
+              <NSwitch size="small" :value="migrateShown" :disabled="!serviceReady"
+                @update:value="onMigrateSwitch" />
+            </div>
+          </div>
         </section>
 
         <!-- 维护 -->
-        <section class="settings-sec" data-sec="maint">
+        <section v-show="activeSec === 'maint'" class="settings-sec" data-sec="maint">
           <h4>维护</h4>
           <div class="settings-row">
             <div class="settings-label">
@@ -145,7 +171,7 @@
         </section>
 
         <!-- 关于 -->
-        <section class="settings-sec" data-sec="about">
+        <section v-show="activeSec === 'about'" class="settings-sec" data-sec="about">
           <h4>关于</h4>
           <div class="settings-row">
             <div class="settings-label"><span>版本</span></div>
@@ -180,8 +206,8 @@
 //   · 应用行为（开机自启 / 启动是否露面 / 关窗去向）住在主进程的 app-settings.json，
 //     走 getAppSettings/setAppSettings——服务进程不需要知道窗口怎么显示。
 // 数字输入用 500ms 防抖提交：边打字边发请求会把服务打满，也不该每敲一个键就写盘。
-import { computed, ref, watch, nextTick } from 'vue'
-import { NModal, NInputNumber, NSwitch, NButton } from 'naive-ui'
+import { computed, ref, watch } from 'vue'
+import { NModal, NInputNumber, NSwitch, NButton, NSelect } from 'naive-ui'
 import type { AppSettingsInfo, ServiceSettings, TargetPathInfo } from '@shared/types'
 import {
   TARGET_PATH_KEY, TARGET_PATH_LABEL, type TargetKey,
@@ -192,12 +218,13 @@ import { notifyFailure } from '../utils/errors'
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// ── 左侧分组导航 ─────────────────────────────────────────────────────────
-// 设置项一多，右侧就变成一条要滚很久的长卷；给个目录，用户能直接跳到想看的那一节。
-// 这里不用锚点（弹窗内滚动容器另算），而是按 offsetTop 程序化滚动：稳、不闪、不用改路由。
+// ── 左侧分组导航（竖向 tab） ─────────────────────────────────────────────
+// 用户定案：不想用一条长滚动看完所有设置。左侧是真正的 tab——点哪组只显示哪组，
+// 右侧内容用 v-show 切换（保留 DOM，输入中的草稿不会丢）。
 const SECTIONS = [
   { key: 'probe', label: '检测与缓存' },
   { key: 'ports', label: '本地端口' },
+  { key: 'atomcode', label: 'AtomCode' },
   { key: 'paths', label: '写入位置' },
   { key: 'app', label: '应用行为' },
   { key: 'maint', label: '维护' },
@@ -208,34 +235,12 @@ const activeSec = ref<SectionKey>('probe')
 const panes = ref<HTMLElement | null>(null)
 
 function goto(key: SectionKey) {
-  const host = panes.value
-  const el = host?.querySelector(`[data-sec="${key}"]`) as HTMLElement | null
   activeSec.value = key
-  if (!host || !el) return
-  host.scrollTo({ top: Math.max(0, el.offsetTop - 6), behavior: 'smooth' })
 }
 
-/** 滚到哪一节就把哪一节标亮：目录与内容不会互相打脸。 */
-function onPanesScroll() {
-  const host = panes.value
-  if (!host) return
-  const y = host.scrollTop + 16
-  let current: SectionKey = SECTIONS[0].key
-  for (const section of SECTIONS) {
-    const el = host.querySelector(`[data-sec="${section.key}"]`) as HTMLElement | null
-    if (el && el.offsetTop <= y) current = section.key
-  }
-  // 滚到底时最后一节可能因为高度不够永远顶不到 y，这里直接判到底。
-  if (host.scrollTop + host.clientHeight >= host.scrollHeight - 4) current = SECTIONS[SECTIONS.length - 1].key
-  if (current !== activeSec.value) activeSec.value = current
-}
-
-// 每次打开都回到顶部，避免上次滚到"关于"、这次一进来就找不到检测项。
-watch(() => props.show, async open => {
-  if (!open) return
-  await nextTick()
-  if (panes.value) panes.value.scrollTop = 0
-  activeSec.value = SECTIONS[0].key
+// 每次打开都回到第一组，避免上次停在"关于"、这次一进来找不到检测项。
+watch(() => props.show, open => {
+  if (open) activeSec.value = SECTIONS[0].key
 })
 
 const { state } = useService()
@@ -243,14 +248,16 @@ const { state } = useService()
 // 服务里读不到（服务还没起 / 旧版 status.json）时的兜底：与服务层 SETTINGS_DEFAULTS 一致。
 const DEFAULTS: ServiceSettings = {
   probeTimeoutMs: 60000,
-  probeConcurrency: 3,
+  probeConcurrency: 6,
   probeCacheMinutes: 360,
   rejectTtlMinutes: 60,
   transientTtlMinutes: 10,
   autoProbeOnStart: true,
+  migrateOnTargetSwitch: false,
   sensenovaTimeoutMs: 20000,
   port: 31280,
   atomcodePort: 31282,
+  atomcodeApprovalMode: 'build',
 }
 
 interface NumField {
@@ -267,7 +274,7 @@ interface NumField {
 
 const FIELDS: NumField[] = [
   { key: 'probeTimeoutMs', label: '单模型检测超时', unit: '秒', min: 10, max: 300, step: 5, scale: 1000, hint: '一个模型最多等多久。免费模型排队时响应会慢，调太小会把「慢」误判成「不可用」。' },
-  { key: 'probeConcurrency', label: '同时检测的模型数', unit: '个', min: 1, max: 6, step: 1, scale: 1, hint: '并发越高一轮越快，但上游对并发敏感，调太高容易招来限流。' },
+  { key: 'probeConcurrency', label: '同时检测的模型数', unit: '个', min: 1, max: 10, step: 1, scale: 1, hint: '并发越高一轮越快（默认 6，上限 10），但上游对并发敏感，调太高容易招来限流。' },
   { key: 'probeCacheMinutes', label: '可用判定的有效期', unit: '分钟', min: 0, max: 10080, step: 30, scale: 1, hint: '这段时间内重启不再重复探测可用模型，直接沿用结论。0 = 每次启动都重测。' },
   { key: 'rejectTtlMinutes', label: '失败判定的有效期', unit: '分钟', min: 1, max: 1440, step: 10, scale: 1, hint: '已下线 / 无权限 / 额度用尽这类「关于模型的结论」缓存多久。' },
   { key: 'transientTtlMinutes', label: '瞬时故障的有效期', unit: '分钟', min: 1, max: 1440, step: 5, scale: 1, hint: '超时、限流属于当时的负载，过期时间该比「失败判定」短得多。' },
@@ -287,19 +294,21 @@ const draft = ref<Record<string, number | null>>({})
 // 开关要做乐观更新：绑定到服务状态的话，用户拨一下得等一个来回（500ms 防抖 + IPC + 500ms 广播）
 // 才看到变化，手感就是"点了没反应"。这里先本地生效，落盘成功后回到跟随状态。
 const autoProbe = ref<boolean | null>(null)
+// 授权档位同样做乐观更新；声明必须在 syncDraft 之前（open watch 是 immediate 的）。
+const approvalMode = ref<string | null>(null)
 const app = ref<AppSettingsInfo | null>(null)
 const appBusy = ref(false)
 const cacheBusy = ref(false)
-const pending = new Map<string, number | boolean>()
+const pending = new Map<string, number | boolean | string>()
 let flushTimer: number | undefined
 
 const serviceReady = computed(() => state.value.phase === 'ready' && !state.value.probe?.running)
 const cacheEntries = computed(() => state.value.cacheEntries ?? 0)
 const autoProbeShown = computed(() => autoProbe.value ?? serviceValue('autoProbeOnStart') === true)
 
-function serviceValue(key: keyof ServiceSettings): number | boolean {
+function serviceValue(key: keyof ServiceSettings): number | boolean | string {
   const live = state.value.settings as ServiceSettings | undefined
-  return (live?.[key] ?? DEFAULTS[key]) as number | boolean
+  return (live?.[key] ?? DEFAULTS[key]) as number | boolean | string
 }
 
 function displayOf(field: NumField): number {
@@ -312,6 +321,8 @@ function syncDraft() {
   for (const field of [...FIELDS, ...PORTS]) next[field.key] = pending.has(field.key) ? draft.value[field.key] ?? displayOf(field) : displayOf(field)
   draft.value = next
   if (!pending.has('autoProbeOnStart')) autoProbe.value = null
+  if (!pending.has('migrateOnTargetSwitch')) migrateOnSwitch.value = null
+  if (!pending.has('atomcodeApprovalMode')) approvalMode.value = null
 }
 
 async function loadApp() {
@@ -329,7 +340,7 @@ watch(() => props.show, (open) => {
 const settingsKey = computed(() => JSON.stringify(state.value.settings || {}))
 watch(settingsKey, () => { if (props.show) syncDraft() })
 
-function queue(patch: Record<string, number | boolean>) {
+function queue(patch: Record<string, number | boolean | string>) {
   for (const [key, value] of Object.entries(patch)) pending.set(key, value)
   if (flushTimer) window.clearTimeout(flushTimer)
   flushTimer = window.setTimeout(flush, 500)
@@ -367,6 +378,29 @@ function onAutoProbe(value: boolean) {
   queue({ autoProbeOnStart: value })
 }
 
+// 切目标是否自动"搬走"（摘旧写新）：与 autoProbe 一样乐观更新。
+const migrateOnSwitch = ref<boolean | null>(null)
+const migrateShown = computed(() => migrateOnSwitch.value ?? serviceValue('migrateOnTargetSwitch') === true)
+function onMigrateSwitch(value: boolean) {
+  migrateOnSwitch.value = value
+  queue({ migrateOnTargetSwitch: value })
+}
+
+// ── AtomCode 授权档位 ───────────────────────────────────────────────────
+// daemon 的 approval_mode 是逐次对话下发的运行参数，不是监听参数——
+// 改完不需要重启，下一次对话就按新档位走。与 autoProbe 一样做乐观更新。
+const APPROVAL_OPTIONS = [
+  { label: '构建（默认）', value: 'build' },
+  { label: '规划（只读）', value: 'plan' },
+  { label: '接受编辑', value: 'accept_edits' },
+]
+const approvalShown = computed(() => approvalMode.value ?? String(serviceValue('atomcodeApprovalMode') || 'build'))
+
+function onApprovalMode(value: string) {
+  approvalMode.value = value
+  queue({ atomcodeApprovalMode: value })
+}
+
 async function patchApp(patch: { autoLaunch?: boolean, startHidden?: boolean }) {
   if (appBusy.value) return
   appBusy.value = true
@@ -393,11 +427,13 @@ async function clearCache() {
 // 三个客户端的数据目录是「可以搬家」的：只按固定目录找，用户搬完就写不进去。
 // 这里先让人看清当前实际写到哪，再允许自动查找 / 手动指定 / 恢复默认。
 // 换位置属于破坏性动作（会先从旧位置摘掉墨桥自己写的条目），所以先内联确认一次。
-const PATH_TARGETS: TargetKey[] = ['workbuddy', 'dsh', 'mofang']
+const PATH_TARGETS: TargetKey[] = ['workbuddy', 'dsh', 'mofang', 'qoder', 'trae']
 const PATH_HINT: Record<TargetKey, string> = {
   workbuddy: 'WorkBuddy 的模型清单 models.json。默认在 ~/.workbuddy/；「自动查找」只扫常见位置，放得偏就用「更改…」。',
   dsh: 'DSH 的数据目录（下面应有 profiles/），不是某一个文件。默认 ~/.dsh。',
   mofang: '墨坊的 config.json（providers 数组在这份文件里）。默认 ~/.mofang/，老版本在 ~/.ai-coding-tool/。',
+  qoder: 'Qoder 的 settings.json（BYOK 自定义模型 providers 在这份文件里）。默认 ~/.qoder-cn/（国际版 ~/.qoder/）。',
+  trae: 'Trae 的 state.vscdb（SQLite 数据库，模型清单在其中）。默认 %APPDATA%/Trae CN/。写入前需完全退出 Trae。',
 }
 type PathMode = 'auto' | 'pick' | 'reset'
 const pendingPath = ref<{ target: TargetKey, mode: PathMode } | null>(null)
@@ -447,16 +483,17 @@ async function confirmPath() {
 
 <style scoped>
 .settings {
-  width: min(600px, calc(100vw - 48px)); max-height: min(78vh, 720px);
+  /* 固定高度：切左侧分组时弹窗不再随内容伸缩（用户指出会变高变矮）。
+     内容多的分组在右侧面板内滚动（.settings-panes overflow:auto）。 */
+  width: min(760px, calc(100vw - 48px)); height: min(78vh, 640px);
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--surface); color: var(--text);
   border: 1px solid var(--line); border-radius: 12px;
 }
 .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 8px; }
 .settings-head h3 { margin: 0; font-size: 15px; }
-.settings-x { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
-.settings-x:hover { background: var(--hover); color: var(--text); }
-/* 左目录 + 右内容：目录固定不动，只有右侧这一列滚，用户始终知道自己在哪一节。 */
+.settings-x { color: var(--muted); font-size: 14px; }
+/* 左目录 + 右内容：目录固定不动，右侧内容只显示当前分组（竖向 tab 切换）。 */
 .settings-body {
   flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 4px 18px 10px;
   display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 16px;
@@ -465,11 +502,8 @@ async function confirmPath() {
   display: flex; flex-direction: column; gap: 2px; padding-top: 8px;
   border-right: 1px solid var(--subtle-line); padding-right: 10px; margin-right: -6px;
 }
-.settings-nav-item {
-  text-align: left; border: 0; background: transparent; color: var(--muted);
-  font-size: 12px; padding: 6px 8px; border-radius: 7px; cursor: pointer; white-space: nowrap;
-}
-.settings-nav-item:hover { background: var(--hover); color: var(--text); }
+/* NButton 导航项：尺寸字重在此统一，选中态底色交给 .active。 */
+.settings-nav-item { text-align: left; font-size: 12px; padding: 6px 8px; border-radius: 7px; white-space: nowrap; }
 .settings-nav-item.active { background: var(--selected); color: var(--accent-text); font-weight: 650; }
 .settings-panes { min-height: 0; overflow: auto; padding-right: 2px; }
 .settings-body { scrollbar-width: thin; }

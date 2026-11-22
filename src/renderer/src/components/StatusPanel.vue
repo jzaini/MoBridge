@@ -2,7 +2,7 @@
   <section class="mo-status-panel" aria-label="接入状态">
     <div class="mo-sp-head">
       <span class="mo-sp-title">接入状态</span>
-      <button class="mo-sp-more" type="button" @click="emit('open-env')">环境信息 ↗</button>
+      <NButton size="tiny" text class="mo-sp-more" @click="emit('open-env')">环境信息 ↗</NButton>
     </div>
     <div class="mo-sp-grid">
       <div v-for="[label, value] in items" :key="label" class="mo-sp-item">
@@ -16,6 +16,7 @@
 <script setup lang="ts">
 // 接入状态面板：步骤条右侧的 8 项概览（系统代理唯一开关在写入目标区，这里不重复展示）。
 import { computed } from 'vue'
+import { NButton } from 'naive-ui'
 import { targetLabel, syncCountText } from '../utils/target'
 
 const props = defineProps<{ state: Record<string, any> }>()

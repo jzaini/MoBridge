@@ -4,7 +4,7 @@
       <div v-for="item in toasts" :key="item.id" class="toast" :class="item.kind" role="status" aria-live="polite">
         <span class="toast-mark" aria-hidden="true">{{ MARK[item.kind] || 'i' }}</span>
         <p class="toast-text">{{ item.text }}</p>
-        <button class="toast-x" type="button" aria-label="关闭通知" @click="dismissToast(item.id)">×</button>
+        <NButton size="tiny" quaternary circle class="toast-x" aria-label="关闭通知" @click="dismissToast(item.id)">×</NButton>
       </div>
     </TransitionGroup>
   </div>
@@ -14,6 +14,7 @@
 // 浮层通知：右下角叠加，不占页面高度。
 // 结果类反馈（写入完成 / 检测结束 / 某步失败）走这里；破坏性操作仍然先弹确认框。
 import { useToasts } from '../composables/useService'
+import { NButton } from 'naive-ui'
 
 const { toasts, dismissToast } = useToasts()
 const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
@@ -46,11 +47,7 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
 .toast.ok .toast-mark { background: var(--success-dot); }
 .toast.error .toast-mark { background: var(--error-dot); }
 .toast-text { margin: 0; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.toast-x {
-  flex: 0 0 auto; border: 0; background: transparent; color: var(--muted);
-  font-size: 15px; line-height: 1; padding: 1px 2px; cursor: pointer;
-}
-.toast-x:hover { color: var(--text); }
+.toast-x { font-size: 14px; color: var(--muted); }
 
 .toast-enter-active, .toast-leave-active { transition: opacity .18s ease, transform .18s ease; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(14px); }

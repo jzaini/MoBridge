@@ -5,8 +5,8 @@
   --surface: #ffffff;
   --text: #242426;
   --muted: #61616a;
-  --line: #d8d8dd;
-  --subtle-line: #e8e8ed;
+  --line: #c6c9d1;
+  --subtle-line: #e0e2e8;
   --accent: #3d6b8e;
   --accent-text: #2f5471;
   --selected: #e8f1fe;
@@ -21,7 +21,9 @@
   --error-dot: #d03050;
   --error-text: #b42318;
   --error-background: #fff1ef;
-  --disabled-text: #9a9aa2;
+  /* 禁用字原 #9a9aa2 在白底只有 2.79:1（WCAG 正文 4.5），用户反馈"看不清字"——提到 3.6:1，
+     仍比正常文字弱一档，保持"不可用"的语义。 */
+  --disabled-text: #82828c;
   --mono: ui-monospace, Consolas, "Cascadia Mono", monospace;
 
   /* 液态玻璃：半透明面板 + 细高光边 + 柔和投影。
@@ -60,7 +62,7 @@
   --error-dot: #ff453a;
   --error-text: #ff8c83;
   --error-background: #352624;
-  --disabled-text: #9797a1;
+  --disabled-text: #a8a8b2;
 
   --glass-bg: linear-gradient(158deg, rgba(62, 62, 68, .58), rgba(36, 36, 40, .46));
   --glass-line: rgba(255, 255, 255, .16);

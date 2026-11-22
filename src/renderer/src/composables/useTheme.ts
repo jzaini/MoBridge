@@ -31,6 +31,10 @@ export function useTheme() {
     // 系统模式下跟随主进程 nativeTheme（Electron 的 prefers-color-scheme 由它驱动）
     window.bridge?.onNativeThemeChanged?.(dark => { systemDark.value = dark; apply() })
     apply()
+    // 启动时也要把持久化的选择同步给主进程：nativeTheme.themeSource 不动的话，
+    // 主进程按系统主题画 WCO（右上角窗口按钮）底色——用户上次选了深色而系统是浅色时，
+    // 重启后右上角就是一条浅色块，跟深色顶栏肉眼可见地拼不上。
+    window.bridge?.setThemeSource?.(choice.value)
   }
   function set(value: ThemeChoice) {
     choice.value = value

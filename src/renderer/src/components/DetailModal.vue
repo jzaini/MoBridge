@@ -3,7 +3,7 @@
     <div class="mo-modal mo-detail-modal" role="dialog" aria-modal="true" :aria-label="model?.name || '模型详情'">
       <div class="mo-modal-head">
         <h3>{{ model?.name || shortId(model?.id) }}</h3>
-        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+        <NButton size="tiny" quaternary circle class="mo-modal-x" aria-label="关闭" @click="emit('close')">×</NButton>
       </div>
       <div class="mo-modal-body">
         <section class="mo-d-section">

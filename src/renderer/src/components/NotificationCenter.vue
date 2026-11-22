@@ -5,7 +5,7 @@
 // 「刚才写入到底成功了没有」「那句英文报错写的什么」。通知必须留档可回看，
 // 所以这里把每条通知都收进 localStorage（最多 200 条），点开能看完整原文。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { NModal } from 'naive-ui'
+import { NModal, NButton } from 'naive-ui'
 import { useNotices, type NoticeItem } from '../composables/useService'
 
 const { notices, unreadCount, markNoticeRead, markAllNoticesRead, clearNotices } = useNotices()
@@ -66,7 +66,7 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
 
 <template>
   <div ref="root" class="notice-root">
-    <button class="notice-btn" type="button" :class="{ active: open }" :aria-expanded="open"
+    <NButton size="small" quaternary class="notice-btn" :class="{ active: open }" :aria-expanded="open"
       :title="unreadCount ? `通知中心（${unreadCount} 条未读）` : '通知中心'" @click="toggle">
       <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none"
         stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -74,13 +74,13 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
         <path d="M10.3 20a2 2 0 0 0 3.4 0" />
       </svg>
       <span v-if="unreadCount" class="notice-badge">{{ badge }}</span>
-    </button>
+    </NButton>
 
     <div v-if="open" class="notice-panel" role="dialog" aria-label="通知历史">
       <header class="np-head">
         <span class="np-title">通知历史</span>
         <span class="np-count">{{ notices.length }} 条</span>
-        <button class="np-link" type="button" :disabled="!notices.length" @click="clearNotices">清空</button>
+        <NButton size="tiny" text class="np-link" :disabled="!notices.length" @click="clearNotices">清空</NButton>
       </header>
 
       <div v-if="!notices.length" class="np-empty">还没有通知。检测、写入、登录这些动作的结果都会记在这里，关掉浮层也能回看。</div>
@@ -91,7 +91,9 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
             <span class="np-mark" aria-hidden="true">{{ MARK[item.kind] || 'i' }}</span>
             <span class="np-copy">
               <span class="np-text">{{ item.text }}</span>
-              <span class="np-meta">{{ timeText(item.at) }}<template v-if="item.detail"> · 含详情</template></span>
+              <span class="np-meta">
+                <span v-if="item.source" class="np-source">{{ item.source }}</span>{{ timeText(item.at) }}<template v-if="item.detail"> · 含详情</template>
+              </span>
             </span>
           </button>
         </li>
@@ -102,10 +104,10 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
       <div v-if="detail" class="np-detail" role="dialog" aria-modal="true" aria-label="通知详情">
         <header class="np-detail-head">
           <div>
-            <h3>{{ detail.kind === 'error' ? '失败' : detail.kind === 'ok' ? '完成' : '提示' }}</h3>
+            <h3>{{ detail.kind === 'error' ? '失败' : detail.kind === 'ok' ? '完成' : '提示' }}<span v-if="detail.source" class="np-source">{{ detail.source }}</span></h3>
             <p>{{ fullTime(detail.at) }}</p>
           </div>
-          <button class="np-detail-x" type="button" aria-label="关闭" @click="detail = null">×</button>
+          <NButton size="tiny" quaternary circle class="np-detail-x" aria-label="关闭" @click="detail = null">×</NButton>
         </header>
         <p class="np-detail-text">{{ detail.text }}</p>
         <template v-if="detail.detail">
@@ -121,10 +123,8 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
 .notice-root { position: relative; display: inline-flex; }
 .notice-btn {
   position: relative; display: inline-grid; place-items: center;
-  width: 30px; height: 28px; border: 1px solid var(--line); border-radius: 8px;
-  background: transparent; color: var(--muted); cursor: pointer;
+  width: 30px; height: 28px; border-radius: 8px; padding: 0;
 }
-.notice-btn:hover, .notice-btn.active { background: var(--hover); color: var(--text); }
 .notice-badge {
   position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; padding: 0 4px;
   border-radius: 999px; background: var(--error-dot); color: #fff;
@@ -144,11 +144,7 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
 }
 .np-title { font-size: 12px; font-weight: 650; }
 .np-count { font-size: 11px; color: var(--disabled-text); }
-.np-link {
-  margin-left: auto; border: 0; background: none; padding: 0; cursor: pointer;
-  font-size: 11px; color: var(--accent-text);
-}
-.np-link:disabled { color: var(--disabled-text); cursor: default; }
+.np-link { margin-left: auto; }
 .np-empty { padding: 22px 16px; font-size: 11.5px; line-height: 1.7; color: var(--muted); }
 .np-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; }
 
@@ -172,6 +168,12 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .np-meta { font-size: 10.5px; color: var(--disabled-text); }
+/* 来源标识：日日新 / AtomCode 各贴各的签，没标的都是系统级通知。 */
+.np-source {
+  display: inline-block; margin: 0 6px 0 0; padding: 0 5px; border-radius: 4px;
+  font-size: 10px; font-weight: 650; line-height: 15px; vertical-align: 1px;
+  background: var(--selected); color: var(--accent-text);
+}
 
 .np-detail {
   width: min(560px, 92vw); background: var(--surface); border-radius: 12px; padding: 16px 18px;
@@ -180,7 +182,7 @@ const MARK: Record<string, string> = { ok: '✓', error: '!', info: 'i' }
 .np-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .np-detail-head h3 { margin: 0; font-size: 14px; }
 .np-detail-head p { margin: 4px 0 0; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.np-detail-x { border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
+.np-detail-x { font-size: 16px; }
 .np-detail-text { margin: 12px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--text); overflow-wrap: anywhere; }
 .np-detail-sub { margin: 14px 0 6px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .np-detail-raw {

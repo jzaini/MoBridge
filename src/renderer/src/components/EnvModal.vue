@@ -3,7 +3,7 @@
     <div class="mo-modal mo-env-modal" role="dialog" aria-modal="true" aria-label="环境信息">
       <div class="mo-modal-head">
         <h3>环境信息</h3>
-        <button class="mo-modal-x" type="button" aria-label="关闭" @click="emit('close')">×</button>
+        <NButton size="tiny" quaternary circle class="mo-modal-x" aria-label="关闭" @click="emit('close')">×</NButton>
       </div>
       <div class="mo-modal-body">
         <p class="mo-env-note">上方状态面板已显示服务概览，这里只列连接、写入记录与说明等明细。</p>
