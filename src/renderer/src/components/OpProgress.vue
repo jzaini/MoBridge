@@ -68,6 +68,9 @@ onUnmounted(stop)
   max-width: calc(100vw - 380px); padding: 7px 13px 7px 11px;
   border-radius: 999px; font-size: 12px; color: var(--text);
   pointer-events: none;
+  /* 兜底:内容(长模型名/固定宽进度条)在窄窗口下会把进度条挤出胶囊边界(用户实锤),
+     这里裁掉任何溢出;进度条本体同时允许收缩(见 .op-track)。 */
+  overflow: hidden;
 }
 /* 进度条本体不接鼠标（避免挡住下面的内容），但停止按钮必须可点。 */
 .op-stop { pointer-events: auto; flex: 0 0 auto; color: var(--error-text); }
@@ -88,7 +91,7 @@ onUnmounted(stop)
    用户要的就是「动态感知」——从头到尾一直在动，不表百分比（百分比路线试过三轮：
    手绘细条、NProgress+缓动估算，感知都太弱，收尾还闪一个满格，全部废弃）。 */
 .op-track {
-  flex: 0 0 110px; height: 6px; border-radius: 999px;
+  flex: 0 1 110px; min-width: 60px; height: 6px; border-radius: 999px;
   background: var(--hover); overflow: hidden;
 }
 .op-track i {

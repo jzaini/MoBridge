@@ -1,7 +1,7 @@
 {
   "name": "mo-bridge",
   "productName": "墨桥",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "墨桥 MoBridge —— 把第三方免费模型接入你的客户端软件（墨坊家族 · 墨坊造器，墨桥通路）",
   "author": "jz",
   "license": "MIT",

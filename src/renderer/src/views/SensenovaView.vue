@@ -494,6 +494,7 @@ onMounted(() => {
             :model-results="{}" :available-models="[]" :excluded-models="[]" :probe="{}" :activity="[]"
             :busy="opBusy" :empty-text="models.length ? '没有符合当前筛选的模型' : '验证 Key 后会自动读取模型清单。'"
             :status-map="snStatusMap" :checked-ids="selection" :latency-text="snLatency"
+            :disabled-ids="[]"
             :checking-ids="retesting ? [retesting] : []"
             @select="onSnSelect" @probe-one="onSnRetest" @detail="onSnDetail" />
         </div>
