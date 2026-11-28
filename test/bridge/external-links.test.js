@@ -14,6 +14,8 @@ test('页面上实际引用的官方链接全部能通过白名单', () => {
     // AtomCode（AtomCodeView，config/atomcode.ts 的 OFFICIAL_SITE / OFFICIAL_DOC）
     'https://atomcode.atomgit.com',                                  // 官网
     'https://atomcode.atomgit.com/docs/zh/getting-started.html',     // 官方文档
+    // 更新日志（SettingsModal 的 changelog 分区，openReleases）
+    'https://github.com/jzaini/MoBridge/releases',                   // GitHub Releases
   ];
   for (const url of usedInPages) {
     // isAllowedExternal 返回 URL 规范化后的字符串（裸域名会补结尾斜杠），
@@ -27,6 +29,7 @@ test('白名单内的域名覆盖清单', () => {
   assert.deepEqual([...EXTERNAL_HOSTS].sort(), [
     'atomcode.atomgit.com',
     'atomgit.com',
+    'github.com',
     'platform.sensenova.cn',
     'token.sensenova.cn',
   ]);

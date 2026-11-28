@@ -25,6 +25,8 @@ export const EXTERNAL_HOSTS = [
   // AtomCode（AtomGit CodingPlan）
   'atomcode.atomgit.com',
   'atomgit.com',
+  // 本产品仓库(更新日志 / Releases / Issues)
+  'github.com',
 ]
 
 export function isAllowedExternal(raw: string): string | null {

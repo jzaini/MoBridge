@@ -142,7 +142,7 @@ const titleBarColors = (dark: boolean) => ({
   symbolColor: dark ? TITLE_BAR_SYMBOL.dark : TITLE_BAR_SYMBOL.light,
 })
 
-const ACTIONS = ['refresh', 'probe', 'probe-stop', 'import', 'remove', 'system-proxy', 'restart', 'choose-config', 'find-config', 'selection', 'target',
+const ACTIONS = ['refresh', 'probe', 'probe-stop', 'import', 'remove', 'remove-all', 'system-proxy', 'restart', 'choose-config', 'find-config', 'selection', 'target',
   // 本地服务的启停：主进程管子进程，动作名以 service- 开头与服务层动作区分。
   'service-stop', 'service-start',
   // 日日新：与上面同一套动作语义，只是作用于直连上游的那条链路。
@@ -481,6 +481,10 @@ async function startService() {
     env: {
       ...process.env, ELECTRON_RUN_AS_NODE: '1', MOBRIDGE_DATA_DIR: dataDir,
       MOBRIDGE_PORT: String(servicePort), MOBRIDGE_ATOMCODE_PORT: String(atomcodePort),
+      MOBRIDGE_CHANGELOG: app.isPackaged ? path.join(process.resourcesPath, 'changelog.md') : path.join(app.getAppPath(), 'docs', 'CHANGELOG.md'),
+      // 版本号单一真源是 package.json（app.getVersion 读它）：服务层状态里显示的
+      // 应用版本从环境变量拿，不再自己写死一份——发版只改 package.json 一处。
+      MOBRIDGE_VERSION: app.getVersion(),
     },
     cwd: dataDir, windowsHide: true, silent: true,
   })

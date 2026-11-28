@@ -28,7 +28,7 @@ test('规则优先级：额度报错不会被后面的宽泛规则抢走', () =>
 });
 
 test('鉴权、网络、超时、端口占用都有中文结论', () => {
-  assert.match(describeFailure('401 Unauthorized').summary, /鉴权没通过/);
+  assert.match(describeFailure('401 Unauthorized').summary, /Key 验证没通过/);
   assert.match(describeFailure('fetch failed: ECONNREFUSED 127.0.0.1:31280').summary, /连不上上游/);
   assert.match(describeFailure('ETIMEDOUT').summary, /超时/);
   assert.match(describeFailure('listen EADDRINUSE: address already in use 127.0.0.1:31280').summary, /端口被占用/);
@@ -55,7 +55,7 @@ test('空报错回落到调用方给的兜底文案', () => {
 
 test('Error 对象取 message，不把 "Error: " 前缀带进浮层', () => {
   const copy = describeFailure(new Error('401 Unauthorized'));
-  assert.match(copy.summary, /鉴权没通过/);
+  assert.match(copy.summary, /Key 验证没通过/);
   assert.ok(!copy.summary.startsWith('Error'));
 });
 

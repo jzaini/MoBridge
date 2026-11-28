@@ -53,7 +53,7 @@ const RULES: Rule[] = [
   },
   {
     test: /401|unauthorized|invalid.*(api )?key|鉴权失败|Authentication/i,
-    summary: '鉴权没通过（Key 无效或过期）。',
+    summary: 'Key 验证没通过（Key 无效或过期）。',
     advice: '检查 Key 是否复制完整，必要时重新生成一个。',
   },
   {
