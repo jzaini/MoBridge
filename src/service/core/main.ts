@@ -41,7 +41,7 @@ import {
   readSelection as acReadSelection, saveSelection as acSaveSelection,
   DEFAULT_PLAN_API as AC_PLAN_API, OFFICIAL_DOC as AC_DOC, OFFICIAL_SITE as AC_SITE,
 } from '../config/atomcode.ts';
-import { loadCatalog as acLoadCatalog, readOfflineModels as acReadOffline, clearCatalogCache as acClearCache, probePlanModels, wrappedUpstreamError } from '../domain/atomcode.ts';
+import { loadCatalog as acLoadCatalog, readOfflineModels as acReadOffline, clearCatalogCache as acClearCache, probePlanModels, wrappedUpstreamError, checkAuth as acCheckAuth } from '../domain/atomcode.ts';
 import { startAtomcodeBridge } from './atomcode-bridge.ts';
 import { startAtomcodeDaemon, daemonModels, daemonChat, buildDaemonCompletionMessage, parseDaemonReply, type DaemonRuntime } from './atomcode-daemon.ts';
 import { validateAction } from '../domain/handoff.ts';
@@ -284,7 +284,7 @@ async function refreshTargets() {
   } catch (error) { log.write(`${new Date().toISOString()} 目标体检失败：${error.message}\n`); }
 }
 
-let state = { useSystemProxy: settings.useSystemProxy === true || (process.platform === 'win32' && settings.useSystemProxy !== false), phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: '0.2.0', opencodeVersion: null, models: [], excludedModels: settings.excludedModels || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false }, target, targets: {}, settings: serviceSettings, cacheEntries: 0, dsh: dshAttachment(), mofang: mofangAttachment(), qoder: qoderAttachment(), trae: traeAttachment(), sensenova: snSnapshot(), atomcode: acSnapshot() };
+let state = { useSystemProxy: settings.useSystemProxy === true || (process.platform === 'win32' && settings.useSystemProxy !== false), phase: 'starting', message: '正在启动', endpoint, pid: process.pid, version: process.env.MOBRIDGE_VERSION || '0.2.1', opencodeVersion: null, models: [], excludedModels: settings.excludedModels || [], modelResults: previous.modelResults || {}, sync: null, availableModels: [], probe: { running: false }, target, targets: {}, settings: serviceSettings, cacheEntries: 0, dsh: dshAttachment(), mofang: mofangAttachment(), qoder: qoderAttachment(), trae: traeAttachment(), sensenova: snSnapshot(), atomcode: acSnapshot() };
 // 状态写入串行化：一个慢的异步更新不能盖掉后发生的状态。
 let statusWrites = Promise.resolve();
 function update(patch) {
@@ -297,6 +297,8 @@ try { if ((await fs.stat(logFile)).size > 5 * 1024 * 1024) await fs.rename(logFi
 const log = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
 // 判定缓存：新鲜的判定直接用，不重新探测（见 probe-cache.js 的过期策略）。
 // 目录变化后由 prune 清理，显式点"检测全部"时整体忽略。
+// 更新日志全文:设置面板「更新日志」分区直接展示(打包时随 extraResources 落 resources)。
+const changelog = (process.env.MOBRIDGE_CHANGELOG ? await fs.readFile(process.env.MOBRIDGE_CHANGELOG, 'utf8').catch(() => '') : '') || '更新日志文件缺失。';
 const probeCache = createProbeCache({
   file: path.join(dataDir, 'probe-cache.json'),
   // 环境变量优先级高于用户设置：自动化/排障时用一个临时值覆盖，不必去改面板。
@@ -426,6 +428,9 @@ async function applyTargetPaths(nextSettings) {
 // Qoder 吃 settings.json 的 providers 对象，Trae 吃 state.vscdb 的模型清单键。
 // 对外都返回 {changed, count, target}。
 async function writePublished(target, published) {
+  // 写入的条目经转发口被客户端调用——OpenCode 服务没起来时写进去也调不通,
+  // 入口先拦:boot 已后台启动服务,正常不会走到这里;运行时未安装时引导自动下载。
+  if (published.length && !runtime) throw new Error('OpenCode 运行时未就绪：进入「OpenCode 接入」页点「检测全部」会自动下载并启动，完成后即可写入');
   if (target === 'dsh')
     return syncDshProvider(dshProfiles, published, endpoint, key, { allowEmpty: true });
   if (target === 'mofang') {
@@ -498,7 +503,9 @@ async function record(model, ok, error, status, code, durationMs, source = 'requ
   }
   if (ok) validated.add(model); else validated.delete(model);
   update({ lastRequest: result, ...(model ? { modelResults: { ...state.modelResults, [model]: result } } : {}), ...captured });
-  update({ availableModels: usableModels().map(m => m.id) });
+  // 可用清单从 state.models(已推送口径)重算,不读模块变量 models——
+  // refresh 进行中模块变量被临时清空,照它算会把页面可用数闪成 0、勾选跟着被清。
+  update({ availableModels: usableModelIds(state.models, validated, state.modelResults) });
   // 判定入缓存。探测结论照收；真实调用的成功也是证据（顺手把时间戳刷新，
   // 下次启动就不会再为它跑一遍探测）。真实调用失败不动缓存——一次抽风不是对模型的判定。
   const entry = model ? models.find(m => m.id === model) : undefined;
@@ -574,8 +581,10 @@ function adoptCachedModels(candidates) {
     // 先合并出新的结果表，再拿它算可用清单。update() 是"算完 patch 才换 state"，
     // 这里如果直接调 usableModels()，读到的是上一份 modelResults：
     // "缓存判定成功、但上一轮结果失败"的模型就会被漏掉，而且再没有别的机会补上。
+    // models 必须与 availableModels 成对推送（手册 S-27）：只推清单不推目录的话，
+    // 一旦 refresh 的目录推送没跑成（崩溃/竞态），页面就是「列表空、可用 N、还能写入」。
     const modelResults = { ...state.modelResults, ...adopted };
-    update({ modelResults, availableModels: usableModelIds(models, validated, modelResults) });
+    update({ models, modelResults, availableModels: usableModelIds(models, validated, modelResults) });
   }
   return count;
 }
@@ -769,15 +778,23 @@ async function ensureRuntime(): Promise<string> {
 
 // 重新读取模型目录。restartRuntime 用于切换代理：OpenCode 的启动环境是固定的，
 // 代理变了只能换一个进程，而新进程就绪之前旧进程继续服务。
-async function refresh(restartRuntime = false, useSystemProxy = state.useSystemProxy) {
+async function refresh(restartRuntime = false, useSystemProxy = state.useSystemProxy, { background = false } = {}) {
   if (refreshing) return refreshing;
   if (probing || stopping || configSearch) throw new Error('请等待检测或配置查找完成');
-  const proxyEnv = await systemProxyEnvironment(useSystemProxy);
   validated.clear();
+  // 保留上一轮清单:目录空/读取失败时不让页面变空(用户实锤「列表没展示但按钮还能触发」)
+  const previousModels = models;
   models = [];
-  update({ phase: 'reading', message: '正在读取免费模型…', models: [], availableModels: [] });
+  // background 模式(启动自动检测已关):boot 立即就绪,目录在后台拉——
+  // 不改 phase(boot 页已切主界面),进度只走 message;失败也只提示不置 error。
+  update(background
+    ? { message: '正在后台读取免费模型…' }
+    : { phase: 'reading', message: '正在读取免费模型…', models: [], availableModels: [] });
   refreshing = (async () => {
     if (restartRuntime) {
+      // 代理环境只在真的要重启运行时才算——普通刷新用不到它,别每次都白跑一遍
+      // PowerShell 注册表查询(此前它在每个 refresh 入口都执行)。
+      const proxyEnv = await systemProxyEnvironment(useSystemProxy);
       const next = attachTranslator(await startBackend(binary, dataDir, log, proxyEnv));
       if (stopping) { await next.stop(); return; }
       const old = runtime;
@@ -786,14 +803,38 @@ async function refresh(restartRuntime = false, useSystemProxy = state.useSystemP
       await old?.stop();
       update({ useSystemProxy });
     }
-    const discovered = await runtime.backend.models();
+    let discovered = await runtime.backend.models();
+    // 目录为空多半是 OpenCode 刚启动、providers 还没就绪(启动竞态):重试几次再下结论。
+    // **首启(上一轮清单为空)同样要重试**——恰恰是首次启动最容易撞上竞态窗口,
+    // 之前重试条件挂着 previousModels.length,首启空目录一次就定局、永远空(2026-11-28 实锤)。
+    // 后台模式多等几轮(2s/4s/8s):boot 已就绪,后台慢慢来不挡人;前台只补一枪,别让用户干等。
+    if (!discovered.length && !stopping) {
+      const attempts = background ? 3 : 1;
+      for (let i = 0; i < attempts && !stopping; i++) {
+        await new Promise(resolve => setTimeout(resolve, 2000 * 2 ** i));
+        discovered = stopping ? [] : await runtime.backend.models().catch(() => []);
+        if (discovered.length) break;
+      }
+    }
     if (stopping) return;
-    models = discovered;
-    update({ phase: 'ready', message: `运行中 · ${models.length} 个免费模型` });
+    models = discovered.length ? discovered : previousModels;
+    // 显式推送 models + availableModels:之前成功分支只更新内存变量不推状态——
+    // 渲染层列表空、右侧却残留旧勾选数并可写入(三现象同一根因,2026-11-27 实锤)。
+    // availableModels 按缓存判定重算(boot 后台模式由 adoptCachedModels 补充 validated)。
+    // 注意这里读的是 state.modelResults——本函数作用域里没有 modelResults 这个变量,
+    // 裸引用会 ReferenceError,整个 refresh 一到成功出口就崩(2026-11-28 用户实锤)。
+    const available = usableModelIds(models, validated, state.modelResults);
+    update(background
+      ? { message: discovered.length ? `运行中 · ${models.length} 个免费模型` : `目录读取为空，已保留上次的 ${models.length} 个模型`, models, availableModels: available }
+      : { phase: 'ready', message: discovered.length ? `运行中 · ${models.length} 个免费模型` : models.length ? `目录读取为空，已保留上次的 ${models.length} 个模型；可稍后重试` : '免费模型目录暂未读取到；OpenCode 可能还没就绪，稍后点「刷新 OC 目录」重试', models, availableModels: available });
     return { count: models.length };
   })();
   try { return await refreshing; }
-  catch (e) { if (!stopping) update({ phase: 'error', message: `读取失败：${e.message}` }); throw e; }
+  catch (e) {
+    if (background) { if (!stopping) update({ message: `模型清单后台读取失败：${e.message}` }); return { count: 0 }; }
+    if (!stopping) update({ phase: 'error', message: `读取失败：${e.message}` });
+    throw e;
+  }
   finally { refreshing = null; }
 }
 
@@ -907,6 +948,30 @@ async function importModels(selectedFile) {
 
 // 移除配置：写入空集合 = 只摘掉本插件写入的条目；文件里其它工具的配置原样保留。
 // 幂等：本来就没有自己的条目时 writePublished 不会改文件（changed=false）。
+// 一键移除:渠道(OC/AC/SN) × 目标(workbuddy/dsh/mofang/qoder/trae) 全组合清空。
+// 每一步只摘该渠道 owner 标记的条目(用户手写的配置永远不动);单组合失败不中断,
+// 失败原因进 summary(比如某渠道没配 Key,本来就没写过条目)。
+async function removeAllWrites() {
+  const summary: Array<Record<string, unknown>> = [];
+  const channels: Array<[string, (t: string) => Promise<Record<string, unknown>>]> = [
+    ['opencode', t => writePublished(t, [])],
+    ['atomcode', t => writeAtomcode(t, [])],
+    ['sensenova', t => writeSensenova(t, [])],
+  ];
+  for (const target of ['workbuddy', 'dsh', 'mofang', 'qoder', 'trae']) {
+    for (const [channel, write] of channels) {
+      try { summary.push({ channel, target, ...(await write(target)) }); }
+      catch (e) { summary.push({ channel, target, skipped: (e as Error).message.slice(0, 120) }); }
+    }
+  }
+  // 条目已全清，渠道侧的「上次写入」记忆一并作废并显式推送——
+  // snLastWrite 只在 snImport/snRemove 里置空，这条批量路径不推的话，
+  // 日日新页的写入徽标会残留旧值（S-27 同款「改了内存没推」）。
+  snLastWrite = null;
+  update({ sensenova: snSnapshot(), atomcode: acSnapshot() });
+  await refreshTargets();
+  return { ok: true, summary };
+}
 async function removeImported() {
   const sync = await syncPublished([]);
   if (sync.error) throw new Error(sync.error);
@@ -958,18 +1023,42 @@ async function acRefreshCatalog(force = false) {
   update({ atomcode: acSnapshot() });
   return acSnapshot();
 }
+// 实际重检登录状态：直接问 status-v2 的鉴权应答（checkAuth），**不拉实时目录**——
+// 目录为空/接口维护会回落离线快照，把有效凭据误判成无效（2026-11-28 用户实锤）。
+// 每次重检前重读 auth.toml：登录终端可能刚写入新凭据，用模块缓存的旧 token 会验错对象。
+async function acCheckLoginState(): Promise<boolean> {
+  try {
+    const auth = await readAuth();
+    const token = typeof auth.values.access_token === 'string' ? auth.values.access_token as string : null;
+    return await acCheckAuth(token) === 'valid';
+  } catch { return false; }
+}
+
 // 等用户在弹出的终端里完成浏览器授权：auth.toml 一有动静就返回。
-// 首次登录看 token 是否出现；已有凭据的重新登录看 mtime 有没有变化。
 // 上限 170s：比主进程转发口（200s）和页面 race（200s）的期限都短，超时不会误报成请求失败。
+// 三个完成信号：
+//   ① 首次登录看 token 是否出现；重新登录看 mtime 或 token 值有没有变化（mtime 粒度可能看不出同秒重写）。
+//   ② 已有凭据的重新登录，AtomCode 可能**复用现有授权、不重写 auth.toml**（2026-11-28 实锤：
+//      重新登录只动了 config.toml，auth.toml 的 token 还是前一天签发的）——mtime/token 永远
+//      不变，只能实际重检凭据。30s 起、每 10s 一次（别 2s 一发地轰网关），凭据有效即完成。
+//   ③ 超时：消息里给明确出路（重试 / 回本页「重新检测」）。
 async function acWaitForLogin(before: Awaited<ReturnType<typeof readAuth>>, deadlineMs = 170000) {
   const startedAt = Date.now();
+  const beforeToken = typeof before.values.access_token === 'string' ? before.values.access_token as string : null;
+  let lastRecheckAt = 0;
   while (Date.now() - startedAt < deadlineMs) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     if (stopping) return { ok: false, code: null, output: '本地服务正在停止，登录等待中断。' };
     const now = await readAuth();
-    const hasToken = typeof now.values.access_token === 'string';
-    if (hasToken && (!before.present || now.mtimeMs !== before.mtimeMs))
+    const token = typeof now.values.access_token === 'string' ? now.values.access_token as string : null;
+    if (token && (!before.present || now.mtimeMs !== before.mtimeMs || token !== beforeToken))
       return { ok: true, code: 0, output: `已在弹出的终端里完成登录（${path.basename(now.file)} 已更新）。` };
+    if (token && before.present && Date.now() - startedAt > 30000 && Date.now() - startedAt - lastRecheckAt >= 10000) {
+      lastRecheckAt = Date.now() - startedAt;
+      if (await acCheckLoginState())
+        return { ok: true, code: 0, output: '登录状态检查通过：凭据有效（经 AtomCode 鉴权接口确认）。' };
+      // 凭据未通过网关验证 → 授权尚未完成,继续等待(直到超时,消息里已有出路)
+    }
   }
   return { ok: false, code: null, output: '等待登录超时：如果终端窗口已关闭或授权没完成，请重试；若已在别处完成登录，回本页点「重新检测」。' };
 }
@@ -1022,12 +1111,20 @@ const acDaemonComplete = async (upstream: string, messages: Array<Record<string,
  */
 // 最近一轮探测走的哪条路（daemon / gateway）：daemon 挂了页面要提示重新登录。
 let acLastProbeVia: 'daemon' | 'gateway' | null = null;
-const acProbeModels = async (models: Array<{ upstream: string }>, signal?: AbortSignal): Promise<Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }>> => {
+const acProbeModels = async (models: Array<{ upstream: string }>, signal?: AbortSignal, onProgress?: (done: number, total: number) => void): Promise<Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }>> => {
   const via = await acDaemonSelection(models[0]?.upstream ?? '').catch(() => null);
-  if (!via) { acLastProbeVia = 'gateway'; return probePlanModels(acGateway.gateway, acToken() ?? '', models, { signal: signal ?? null }); }
+  if (!via) {
+    acLastProbeVia = 'gateway';
+    // gateway 兜底路径同样推 N/M 进度（此前只有 daemon 路径有——AC 检测曾出现孤零零的耗时）
+    return probePlanModels(acGateway.gateway, acToken() ?? '', models, {
+      signal: signal ?? null,
+      onProgress: (done, total) => update({ atomcode: { ...acSnapshot(), probeProgress: { done, total, concurrency: models.length } } }),
+    });
+  }
   acLastProbeVia = 'daemon';
   const canary = '请只回复两个字符：OK，不要任何其他内容。';
   const results: Record<string, { ok: boolean, reason: 'ok' | 'rejected' | 'inconclusive', detail: string | null }> = {};
+  let acDone = 0;
   // 与 OpenCode / 日日新同一套并发池口径，别让模型多时全部裸并发砸向网关。
   await runWithConcurrency(models, probeConcurrency(), async model => {
     try {
@@ -1060,7 +1157,7 @@ const acProbeModels = async (models: Array<{ upstream: string }>, signal?: Abort
         results[model.upstream] = { ok: false, reason: 'rejected', detail: message.slice(0, 200) };
       else
         results[model.upstream] = { ok: false, reason: 'inconclusive', detail: message.slice(0, 200) };
-    }
+    } finally { acDone += 1; onProgress?.(acDone, models.length); }
   });
   return results;
 };
@@ -1120,11 +1217,15 @@ async function acRemove() {
 // 但「写进哪个目标、只动自己的条目」这套规矩是一致的，所以复用同一批写入器，
 // 靠 owner / providerId 区分来源，三方写同一份 models.json 也互不擦除。
 const snClient = {
-  // 发给上游的必须是真名；带前缀的名字只用于展示。
+  // ── 命名契约（2026-11-28 用户定案，全客户端统一）──
+  // id 字段 = 转发口/上游认的名字：SN 直连商汤 → 上游真名（sensenova-6.8-flash）；
+  //   OC/AC 经本机转发口 → 展示名（OC · x / AC · x，转发口按它路由）。
+  // name/label 字段 = 一律 `家族前缀 · 目录展示名`（SN · xxx / AC · xxx / OC · xxx）——
+  //   用户在任何客户端里都能一眼认出是墨桥哪条线的模型；禁止裸名、也禁止抄 id
+  //   （WorkBuddy 按 name:id 拼接显示，抄 id 会连读两遍——D-16 实锤）。
+  // D-16 的正确解法是 label 用「目录展示名」而不是去掉前缀——DSH 曾为规避连读把
+  // label 覆盖成纯展示名，前缀丢失（2026-11-28 用户实锤，已改回 snClient.labelOf）。
   idOf: (model: { upstream: string }) => model.upstream,
-  // label 之前直接抄 model.id（SN · sensenova-6.8-flash），WorkBuddy 的模型列表按
-  // 「name:id」拼着显示，等于把上游名连读两遍（用户反馈太长）。改用目录展示名，
-  // 前缀仍保留——三方写入同一份配置靠它防同名覆盖。
   labelOf: (model: { id: string, name?: string }) => model.name ? `SN · ${model.name}` : model.id,
 };
 async function snSyncState() {
@@ -1139,8 +1240,15 @@ async function snSyncState() {
 async function writeSensenova(target, models) {
   if (!snKey) throw new Error('请先填写日日新 API Key');
   if (target === 'dsh')
+    // SN 直连商汤:条目 name 用纯目录展示名——DSH 界面会把 name/id 一起展示,
+    // 再带一层 `SN · ` 前缀就成了用户实锤的「多个名字」;防混靠 owner 标记即可。
     return syncDshProvider(dshProfiles, models, snBase.apiBase, snKey, {
-      allowEmpty: true, providerId: 'mobridge-sensenova', displayName: '墨桥 · 日日新', ...snClient,
+      allowEmpty: true, providerId: 'mobridge-sensenova', displayName: '墨桥 · 日日新',
+      // 命名契约（2026-11-28 用户定案）：所有客户端的条目 label 一律带家族前缀
+      // `SN · 目录展示名`（与本线 WorkBuddy/墨坊/Qoder 同款）——此前为规避「name/id 连读」
+      // 把 DSH 的 label 覆盖成纯展示名，前缀丢失（用户实锤：DSH 下拉里日日新模型没有 SN·）。
+      // 连读的正确解法是 label 用「展示名」而非「抄 id」——见 snClient.labelOf 注释。
+      ...snClient,
     });
   if (target === 'mofang') {
     mofangInfo = await describeMofang(mofangOptions());
@@ -1195,8 +1303,8 @@ async function snValidateAction() {
   snValidation = { ...result, time: new Date().toISOString() };
   // 鉴权通过就把每个模型都真跑一遍：账号能连不等于每个模型都可用。
   try {
-    if (result.ok) { probeStop.sn = false; snProbeResults = await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal }); }
-  } finally { activeProbeScopes.delete(scope); }
+    if (result.ok) { probeStop.sn = false; snProbeResults = await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal, onProgress: (done, total) => update({ sensenova: { ...snSnapshot(), probeProgress: { done, total, concurrency: probeConcurrency() } } }) }); }
+  } finally { activeProbeScopes.delete(scope); update({ sensenova: { ...snSnapshot(), probeProgress: null } }); }
   update({ sensenova: snSnapshot() });
   return { ...result, available: Object.values(snProbeResults).filter((item: any) => item?.ok === true).length };
 }
@@ -1206,8 +1314,8 @@ async function snProbeAction(only) {
   const scope = beginProbeScope();
   try {
     probeStop.sn = false;
-    snProbeResults = { ...snProbeResults, ...await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, only: ids, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal }) };
-  } finally { activeProbeScopes.delete(scope); }
+    snProbeResults = { ...snProbeResults, ...await snProbeAll(snKey, snModels(), { baseUrl: snBase.apiBase, only: ids, timeoutMs: serviceSettings.sensenovaTimeoutMs, concurrency: probeConcurrency(), shouldStop: () => probeStop.sn, signal: scope.signal, onProgress: (done, total) => update({ sensenova: { ...snSnapshot(), probeProgress: { done, total, concurrency: probeConcurrency() } } }) }) };
+  } finally { activeProbeScopes.delete(scope); update({ sensenova: { ...snSnapshot(), probeProgress: null } }); }
   update({ sensenova: snSnapshot() });
   return { available: Object.values(snProbeResults).filter((item: any) => item?.ok === true).length };
 }
@@ -1386,8 +1494,9 @@ process.on('SIGTERM', () => shutdown()); process.on('SIGINT', () => shutdown());
 process.on('uncaughtException', e => { update({ phase: 'error', message: e.message }); shutdown(1); });
 process.on('unhandledRejection', e => { update({ phase: 'error', message: String(e?.message || e) }); shutdown(1); });
 try {
-  update({ phase: 'starting' });
+  update({ phase: 'starting', bootStep: 'service' }); // 启动页真实步骤：后台服务进程已拉起
   const cached = await probeCache.load();
+  update({ bootStep: 'config' }); // 本地配置与判定缓存已加载
   // 冷启动（缓存里一条新鲜判定都没有）先清一次：上一次异常退出可能把自己的条目留在了配置里。
   // 热启动跳过这一步——下面用到缓存判定之后会立刻把同一份清单写回去，先清后写只会平白多两次备份。
   if (!cached) await syncPublished([]);
@@ -1464,8 +1573,8 @@ try {
         if (!wanted.length) return acSnapshot();
         const scope = beginProbeScope();
         try {
-          acModelProbe = { ...acModelProbe, ...await acProbeModels(wanted, scope.signal).catch(() => ({})) };
-        } finally { activeProbeScopes.delete(scope); }
+          acModelProbe = { ...acModelProbe, ...await acProbeModels(wanted, scope.signal, (done, total) => update({ atomcode: { ...acSnapshot(), probeProgress: { done, total, concurrency: probeConcurrency() } } })).catch(() => ({})) };
+        } finally { activeProbeScopes.delete(scope); update({ atomcode: { ...acSnapshot(), probeProgress: null } }); }
         acProbedAt = Date.now();
         update({ atomcode: acSnapshot() });
         return acSnapshot();
@@ -1497,29 +1606,46 @@ try {
     update({ atomcode: { ...acSnapshot(), bridgeError: (error as Error).message } });
     log(`AtomCode 转发口启动失败：${(error as Error).message}`);
   }
-  await acRefreshCatalog(false).catch(() => {});
+  update({ phase: 'starting', bootStep: 'atomcode' }); // AtomCode 检测与目录加载
+  // AC 目录后台拉取(不 await):boot 不被 AtomCode daemon 冷启动拖住——
+  // acEnsureDaemon 本身是懒模式,谁先需要目录/探测/转发谁触发;完成后快照自动推送。
+  void acRefreshCatalog(false).catch(() => {});
   update({ atomcode: acSnapshot() });
   await refreshTargets();
   if (binary) {
-    update({ message: '正在启动隔离模型服务' });
+    update({ bootStep: 'runtime', message: '正在启动 OpenCode 隔离模型服务' });
     runtime = attachTranslator(await startBackend(binary, dataDir, log, startupProxyEnv));
     watchRuntime(runtime);
     // 确认运行的是本产品要的专用 agent，而不是用户自己的构建 agent。
     const agents = await runtime.backend.request('/agent');
     if (!agents.some(a => a.name === 'mobridge')) throw new Error('Dedicated approval-gated agent missing');
-    await refresh();
-    update({ cacheEntries: probeCache.size() });
-    // 启动即整轮检测（默认开）：探测只更新墨桥自己的判定与可用清单，
-    // **不再自动写入客户端**——写入只由用户点「写入配置」显式触发（2026-11-18 用户定案）。
-    const round = serviceSettings.autoProbeOnStart ? startProbes(undefined, true, false) : { reused: adoptCachedModels(models), probing: 0 };
-    if (!stopping && !serviceSettings.autoProbeOnStart)
-      log.write(`${new Date().toISOString()} 已关闭启动自动检测，仅采用 ${round?.reused ?? 0} 条缓存判定\n`);
-    console.log(`MoBridge ready at ${endpoint}; ${models.length} free models; probe cache hit ${round?.reused ?? 0}, probing ${round?.probing ?? 0}`);
+    update({ bootStep: 'bridge', message: '转发口就绪' });
+    if (serviceSettings.autoProbeOnStart) {
+      // 启动自动检测(默认开):等目录就绪 + 整轮探测,boot 页等完才切主界面(原行为)。
+      update({ bootStep: 'catalog' });
+      await refresh();
+      update({ cacheEntries: probeCache.size() });
+      // 启动即整轮检测(默认开):探测只更新墨桥自己的判定与可用清单,
+      // **不再自动写入客户端**——写入只由用户点「写入配置」显式触发(2026-11-18 用户定案)。
+      update({ bootStep: 'probe' });
+      const round = startProbes(undefined, true, false);
+      console.log(`MoBridge ready at ${endpoint}; ${models.length} free models; probe cache hit ${round?.reused ?? 0}, probing ${round?.probing ?? 0}`);
+    } else {
+      // 启动自动检测已关(用户拍板 2026-11-27):boot 只等墨桥服务,秒级切主界面;
+      // 模型目录后台拉取(OpenCode 冷启动约 1 分钟),完成后补缓存判定。
+      // 第二参只收 boolean(useSystemProxy)——此前误传 startupProxyEnv(env 对象),
+      // 靠 restartRuntime=false 才没炸;代理环境本就只在重启运行时分支里现算。
+      update({ phase: 'ready', bootStep: 'catalog', cacheEntries: probeCache.size(), message: '墨桥服务就绪；模型清单后台加载中…', changelog });
+      console.log(`MoBridge ready at ${endpoint} (background catalog load)`);
+      void refresh(false, state.useSystemProxy, { background: true })
+        .then(() => { adoptCachedModels(models); update({ cacheEntries: probeCache.size() }); })
+        .catch(() => {});
+    }
   } else {
     // 无运行时也照常就绪：其余接入线（日日新 / AtomCode / 配置写入）全部可用。
     // 这里必须显式把 phase 置为 ready——if 分支靠 refresh() 置位，这条分支没有
     // refresh，漏了它 phase 就停在 starting，页面永远显示"加载中"（同事电脑实锤）。
-    update({ phase: 'ready', cacheEntries: probeCache.size(), message: 'OpenCode 运行时未安装：进入「OpenCode 接入」页或点「检测全部」时自动下载' });
+    update({ phase: 'ready', bootStep: 'runtime', cacheEntries: probeCache.size(), message: 'OpenCode 运行时未安装：进入「OpenCode 接入」页或点「检测全部」时自动下载', changelog });
     console.log(`MoBridge ready at ${endpoint} (deferred OpenCode runtime)`);
   }
 } catch (e) { update({ phase: 'error', message: e.message }); if (!runtime) await shutdown(1); }

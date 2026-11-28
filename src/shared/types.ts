@@ -194,6 +194,8 @@ export interface SensenovaState {
   validation?: SourceProbeResult & { preferred?: string, fallback?: boolean, attempts?: SourceProbeResult[], time?: string } | null
   models?: Array<{ id: string; upstream: string; name: string; kind: string; context: number | null; images: boolean; caps: string[]; note: string; chatProbe?: boolean }>
   probeResults?: Record<string, SourceProbeResult>
+  /** 逐模型检测的实时进度(检测期间推送,完成后清 null——浮层显示「N/M · 并行 6」)。 */
+  probeProgress?: { done: number; total: number; concurrency: number } | null
   selection?: string[]
   apiBase?: string
   apiBaseCustom?: boolean
@@ -213,6 +215,8 @@ export interface AtomcodeState {
   loggedIn?: boolean
   account?: { username: string; email: string; expiresAt: string | null; tokenPresent: boolean }
   models?: Array<{ id: string; upstream: string; name: string; context: number | null; images: boolean; levels: string[] }>
+  /** 逐模型检测的实时进度(检测期间推送,完成后清 null)。 */
+  probeProgress?: { done: number; total: number; concurrency: number } | null
   selection?: string[]
   catalogSource?: 'live' | 'offline' | 'none'
   plan?: { planName: string; planType: string; tier: string; expiresAt: string | null; remainingDays: number | null; quotaExhausted: boolean } | null
@@ -269,6 +273,10 @@ export interface ServiceState {
   settings?: ServiceSettings
   /** 判定缓存里现在有多少条结论。 */
   cacheEntries?: number
+  /** 更新日志全文(服务层启动时从 CHANGELOG.md 读入,设置面板直接展示)。 */
+  changelog?: string
+  /** 启动阶段（boot 页真实步骤清单由它驱动：service/config/runtime/bridge/atomcode/catalog/probe）。 */
+  bootStep?: string
   actionBusy?: string | false
   /** 主进程正在收摊（停服务、可选摘条目、释放端口）：渲染层据此盖退出遮罩。 */
   shuttingDown?: boolean

@@ -92,7 +92,7 @@ export async function validateKey(
 export async function probeAll(
   key: string,
   models: SensenovaModel[],
-  { baseUrl, only = null as string[] | null, timeoutMs, concurrency = 6, shouldStop = null as (() => boolean) | null, signal = null as AbortSignal | null } = {},
+  { baseUrl, only = null as string[] | null, timeoutMs, concurrency = 6, shouldStop = null as (() => boolean) | null, signal = null as AbortSignal | null, onProgress = null as ((done: number, total: number) => void) | null } = {},
 ) {
   const wanted = only && only.length ? new Set(only) : null;
   const results: Record<string, SensenovaProbeResult> = {};
@@ -114,10 +114,13 @@ export async function probeAll(
   // 现在与 OpenCode 探测同一套并发池口径（默认 6，调用方可调）。
   // 「停止检测」双通道：shouldStop 跳过未开始的；signal 直接掐断在跑的请求——
   // 被掐断的模型不写结论（保留上一次判定），而不是记成「网络不可达」。
+  let done = 0;
   await runWithConcurrency(chatTargets, concurrency, async model => {
     if (shouldStop?.()) return;
     const result = await probeModel(key, model.upstream, { baseUrl, timeoutMs, signal });
     if (result.code !== 'stopped') results[model.upstream] = result;
+    done += 1;
+    onProgress?.(done, chatTargets.length);
   });
   return results;
 }

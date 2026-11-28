@@ -31,7 +31,7 @@ async function readBody(req) {
 }
 function json(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); }
 
-export function createServer({ server = http.createServer(), key, selectModel, backend, getModels, refresh, importModels, removeImported, findConfig, setSystemProxy, setTarget, inspectTargets, saveSettings, autoLocatePath, clearCache, sensenova, atomcode, probe, stopProbes, status, onResult = () => {}, onActivity }) {
+export function createServer({ server = http.createServer(), key, selectModel, backend, getModels, refresh, importModels, removeImported, removeAllWrites, findConfig, setSystemProxy, setTarget, inspectTargets, saveSettings, autoLocatePath, clearCache, sensenova, atomcode, probe, stopProbes, status, onResult = () => {}, onActivity }) {
   const active = new Set();
   server.removeAllListeners('request');
   server.on('request', async (req, res) => {
@@ -61,6 +61,7 @@ export function createServer({ server = http.createServer(), key, selectModel, b
       if (req.method === 'POST' && route === '/admin/import') return json(res, 200, await importModels((await readBody(req)).modelsFile));
       // 移除配置 = 写入空集合：只摘掉本插件自己的条目，对文件里其它工具的配置原样保留。
       if (req.method === 'POST' && route === '/admin/remove') return json(res, 200, await removeImported());
+      if (req.method === 'POST' && route === '/admin/remove-all') return json(res, 200, await removeAllWrites());
       if (req.method === 'POST' && route === '/admin/inspect-targets') return json(res, 200, await inspectTargets());
       // 设置：面板发来的只是改动字段，合并与落盘都在服务侧做，主进程不碰配置文件。
       if (req.method === 'POST' && route === '/admin/settings') return json(res, 200, await saveSettings(await readBody(req)));

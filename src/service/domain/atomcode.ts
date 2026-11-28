@@ -70,13 +70,18 @@ export async function probePlanModels(
   gateway: string,
   token: string,
   models: Array<{ upstream: string }>,
-  { timeoutMs = 30000, signal = null as AbortSignal | null, fetchImpl = globalThis.fetch as typeof fetch } = {},
+  { timeoutMs = 30000, signal = null as AbortSignal | null, fetchImpl = globalThis.fetch as typeof fetch, onProgress = null as ((done: number, total: number) => void) | null } = {},
 ): Promise<Record<string, ModelProbeResult>> {
   const results: Record<string, ModelProbeResult> = {};
+  // onProgress（N/M）：AC gateway 兜底路径此前没有进度推送——UI 只有孤零零的耗时，
+  // 与 daemon 路径 / OC / SN 的「N/M · 并行 N」口径不一致（用户实锤）。
+  let done = 0;
   await Promise.all(models.map(async model => {
     const result = await probeOne(model.upstream);
     // 手动停止掐断的请求不算结论（保留该模型上一次的判定）
     if (result) results[model.upstream] = result;
+    done += 1;
+    onProgress?.(done, models.length);
   }));
   return results;
 
@@ -233,6 +238,31 @@ export async function loadCatalog(
     const offline = await readOfflineModels(home);
     return { models: offline, source: offline.length ? 'offline' : 'none', plan: null, fetchedAt: null, error: (error as Error).message };
   }
+}
+
+/** 登录等待的凭据有效性判定：只问鉴权，不问目录。
+ * status-v2 应答 200 且形状像套餐状态 = 凭据有效——即使实时目录为空或接口维护。
+ * 此前用 loadCatalog(force) 兼职判定：「目录为空/拉取失败 → 回落离线快照」会把
+ * 有效凭据误判成无效，登录等待只能干到超时（2026-11-28 用户实锤：AtomCode 复用
+ * 现有凭据时不重写 auth.toml，前一天签发的 token 一直有效，重检却连续失败）。
+ * 返回 'valid' | 'invalid'（401/403）| 'inconclusive'（网络错误/超时/应答不认识）。 */
+export async function checkAuth(
+  token: string | null,
+  { clientVersion = '5.2.6', fetchImpl = globalThis.fetch as typeof fetch, timeoutMs = 10000 } = {},
+): Promise<'valid' | 'invalid' | 'inconclusive'> {
+  if (!token) return 'invalid';
+  try {
+    const response = await fetchImpl(`${planAPI()}/coding-plan/status-v2`, {
+      headers: headers(token, clientVersion), signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (response.status === 401 || response.status === 403) return 'invalid';
+    if (!response.ok) return 'inconclusive';
+    let data: unknown;
+    try { data = JSON.parse(await response.text()); } catch { return 'inconclusive'; }
+    if (!data || typeof data !== 'object') return 'inconclusive';
+    const known = ['plan_type', 'codingplan_free', 'plan', 'expires_at', 'window_quota_exhausted'];
+    return known.some(field => field in (data as Record<string, unknown>)) ? 'valid' : 'inconclusive';
+  } catch { return 'inconclusive'; }
 }
 
 // ── 上游直连（转发口用）─────────────────────────────────────────────────
