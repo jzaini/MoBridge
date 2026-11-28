@@ -9,7 +9,7 @@ import { atomicWrite, pruneBackups, OWNER, OWNER_FIELD } from '../sync/sync.ts';
 //   - 只增删带 owner 标记的那一条，用户自己写的 provider 一律原样保留；
 //   - 绝不擅自改 activeProvider（那是用户当前用哪家的选择，不属于我们该动的范围）。
 export const PROVIDER_ID = 'mobridge';
-const PROVIDER_NAME = '墨桥 MoBridge';
+const PROVIDER_NAME = '墨桥 · OpenCode';
 const PROVIDER_DESCRIPTION = '墨桥本机转发（127.0.0.1）；关闭墨桥后此 provider 不可用。';
 
 // 墨坊自己的数据目录规则：新的 ~/.mofang 优先，新目录不存在而旧的 ~/.ai-coding-tool
@@ -84,18 +84,24 @@ export function mofangProvider(models, endpoint, key, { providerId = PROVIDER_ID
 
 // 把 provider 合并进配置：先摘掉自己旧的条目，再按「id 冲突让给用户」的规矩追加。
 // 与 WorkBuddy 的 mergeModels 同一套口径：用户手写的同 id 条目永远赢。
+// 家族命名空间（2026-11-28 修正）：墨坊配置里「mobridge*」开头的 provider 都是墨桥写的
+// （inspectTargets 也按这个前缀分家）。旧版墨桥写入的条目可能还没带 owner 字段——只认
+// owner 会把它当用户自建、报 MOFANG_ID_CONFLICT，从此永远写不进去（用户实锤：
+// activeProvider=mobridge-sensenova 的条目就没有 owner 字段）。同 id 且 id 在命名空间内
+// 的一律按「迁移」处理：替换成带 owner 的新形状；只有用户自建 id（非 mobridge 前缀）才冲突让位。
 export function mergeProvider(document, provider, { providerId = PROVIDER_ID, owner = OWNER } = {}) {
   const list = Array.isArray(document?.providers) ? document.providers : null;
   if (!list) throw new Error('不是受支持的墨坊 config.json 格式（缺少 providers 数组）');
-  const kept = list.filter(entry => !isOwned(entry, owner));
-  if (provider === null) return { ...document, providers: kept };
-  const conflicts = new Set(kept.map(entry => entry?.id).filter(Boolean));
-  if (conflicts.has(providerId)) {
-    // 用户自己已经有一个同名 provider：不覆盖，也不改名硬挤进去。
+  const existing = list.find(entry => entry?.id === providerId);
+  const oursByContract = !!existing && (isOwned(existing, owner)
+    || (typeof providerId === 'string' && providerId.startsWith('mobridge')));
+  if (provider !== null && existing && !oursByContract) {
     const error = new Error(`墨坊配置里已存在用户自建的 ${providerId} provider，为避免覆盖已跳过写入`);
     (error as Error & { code?: string }).code = 'MOFANG_ID_CONFLICT';
     throw error;
   }
+  const kept = list.filter(entry => !isOwned(entry, owner) && entry?.id !== providerId);
+  if (provider === null) return { ...document, providers: kept };
   return { ...document, providers: [...kept, provider] };
 }
 

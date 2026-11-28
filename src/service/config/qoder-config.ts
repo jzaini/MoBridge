@@ -3,6 +3,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { SOURCE_OWNERS, OWNER_FIELD, atomicWrite, pruneBackups } from '../sync/sync.ts';
 
+// provider 显示名按来源分流(与 DSH/墨坊分支各自传的名同口径)。
+// key 与 SOURCE_OWNERS 一一对应;resolvedSource 兜底 'opencode',取值必然命中。
+const PROVIDER_NAMES = {
+  opencode: '墨桥 · OpenCode',
+  atomcode: '墨桥 · AtomCode',
+  sensenova: '墨桥 · 日日新',
+} as const;
+
 // Qoder（阿里 Agentic 工作台，含 Qoder CN 桌面端）的 BYOK 自定义模型存在
 // ~/.qoder-cn/settings.json（国际版在 ~/.qoder/settings.json）的 providers 键下：
 //   "qoder-custom-<uuid>": { baseUrl, apiKey, type, protocol, authType, model, models[], displayName }
@@ -94,7 +102,10 @@ export function qoderProvider(models, baseUrl, key, { source, owner, idOf, label
     authType: 'bearer',
     model: list[0]?.model ?? '',
     models: list,
-    displayName: '墨桥 MoBridge',
+    // provider 显示名按来源分流:DSH/墨坊分支各自传对了名,只有 Qoder 走这个
+    // 共享函数且调用方不传——此前硬编码 OpenCode,日日新/AtomCode 的条目在
+    // settings.json 里挂在 OpenCode 名下(Qoder UI 不展示该字段,仅排查时可见)。
+    displayName: PROVIDER_NAMES[resolvedSource],
     [OWNER_FIELD]: resolvedOwner,
   };
 }

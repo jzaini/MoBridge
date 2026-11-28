@@ -20,21 +20,27 @@ const positive = value => Number.isInteger(value) && value > 0 ? value : null;
 
 // dsh 的模型条目只需要“怎么连、能吃多少”：
 // 上下文与输出上限取 OpenCode 目录里声明的值，没声明就用 dsh 自己的默认。
-export function dshModelEntry(model) {
+// id/name 支持按来源定制：
+//   - OC 线经本机转发口(31280)——id 保持展示名(`OC · x`),转发口认;
+//   - SN 线直连商汤(idOf/labelOf 来自 snClient)——id 必须是上游真名,
+//     写展示名商汤直接 404 model is not found(2026-11-27 用户实锤)。
+// 之前 dshModelEntry 不接收 idOf/labelOf,dshProvider 传了也被忽略——SN 直连条目
+// 的 id 错写成展示名,调用必 404;name 还硬编码 OC 前缀,SN 条目显示名也错挂。
+export function dshModelEntry(model, { idOf, labelOf } = {}) {
   const contextWindow = positive(model.context) ?? positive(model.input) ?? 262144;
   const maxTokens = positive(model.output) ?? 32768;
   return {
-    id: model.id,
+    id: idOf ? idOf(model) : model.id,
     // DSH 没有“按模型关工具”的开关；只回文本的模型在名字上标出来，
     // 免得用户在 DSH 里对着一堆工具调用失败猜原因。
-    name: `OC · ${model.name}${model.chatOnly === true ? '（仅对话）' : ''}`,
+    name: labelOf ? labelOf(model) : `OC · ${model.name}${model.chatOnly === true ? '（仅对话）' : ''}`,
     input: model.images === true ? ['text', 'image'] : ['text'],
     contextWindow,
     maxTokens,
   };
 }
 
-export function dshProvider(models, endpoint, key, { displayName = 'MoBridge', idOf, labelOf } = {}) {
+export function dshProvider(models, endpoint, key, { displayName = '墨桥 · OpenCode', idOf, labelOf } = {}) {
   return {
     displayName,
     api: 'openai-completions',
@@ -142,7 +148,7 @@ export function ownedProviderIds(text: string | null) {
 
 // 写入所有 DSH profile。models 为空 = 收摊，只摘自己的条目。
 // 与 WorkBuddy 的 syncModels 保持同一套规矩：内容相同不写、写前备份、原子替换。
-export async function syncDshProvider(profiles, models, endpoint, key, { allowEmpty = false, providerId = PROVIDER_ID, displayName = 'MoBridge', idOf, labelOf } = {}) {
+export async function syncDshProvider(profiles, models, endpoint, key, { allowEmpty = false, providerId = PROVIDER_ID, displayName = '墨桥 · OpenCode', idOf, labelOf } = {}) {
   if (!profiles.length) throw new Error('未检测到 DSH profile；请先启动一次 DeepSeek Harness（~/.dsh/profiles）');
   if (!models.length && !allowEmpty) throw new Error('Empty model discovery; existing DSH configuration preserved');
   const provider = models.length ? dshProvider(models, endpoint, key, { displayName, idOf, labelOf }) : null;

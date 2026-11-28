@@ -25,7 +25,7 @@ test('provider 条目：字段形状照抄 Qoder 原生落盘样本', () => {
   assert.equal(provider.protocol, 'openai');
   assert.equal(provider.authType, 'bearer');
   assert.equal(provider.model, 'sensenova-6.8-flash');
-  assert.equal(provider.displayName, '墨桥 MoBridge');
+  assert.equal(provider.displayName, '墨桥 · 日日新');
   assert.equal(provider.mobridgeOwner, SOURCE_OWNERS.sensenova);
   assert.equal(provider.models.length, 1);
   const entry = provider.models[0];
