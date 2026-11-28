@@ -53,6 +53,16 @@ test('model 条目按目录声明换算，仅对话模型也能落地', () => {
   assert.equal(dshModelEntry({ id: 'opencode/z', name: 'Z', chatOnly: true }).name, 'OC · Z（仅对话）');
 });
 
+// 命名契约（2026-11-28 用户定案）：直连条目 id=上游真名，label 一律带家族前缀 `SN · 目录展示名`。
+// 此前 DSH 分支把 label 覆盖成纯展示名，前缀丢失（用户实锤：DSH 下拉里日日新模型没有 SN·）。
+test('SN 直连写入 DSH：id=上游真名，label 带 SN · 前缀（命名契约，不许裸名也不许连读）', () => {
+  const snModel = { id: 'SN · SenseNova 6.8 Flash', upstream: 'sensenova-6.8-flash', name: 'SenseNova 6.8 Flash', images: true, context: 250000 };
+  const entry = dshModelEntry(snModel, { idOf: m => m.upstream, labelOf: m => `SN · ${m.name}` });
+  assert.equal(entry.id, 'sensenova-6.8-flash', '真正发给商汤的报文用上游真名');
+  assert.equal(entry.name, 'SN · SenseNova 6.8 Flash', '展示名带家族前缀（不许裸名）');
+  assert.notEqual(entry.name, entry.id, 'name 与 id 不同串——WorkBuddy/DSH 的 name:id 展示不会连读两遍');
+});
+
 test('从空 patch 起步也能建出结构', () => {
   const text = renderPatch('', dshProvider(FREE, 'http://127.0.0.1:41980/v1', 'k'));
   assert.match(text, /- id: llm-pi-ai/);
