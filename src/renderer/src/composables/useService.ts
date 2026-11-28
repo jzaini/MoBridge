@@ -321,7 +321,17 @@ export const currentOp = computed<OpInfo | null>(() => {
     const detail = parts.length ? parts.join(' · ') : undefined
     return { label: '检测模型', detail, ratio: total ? Math.min(1, done / total) : undefined }
   }
-  if (pendingLocal.value) return { label: opLabel(pendingLocal.value) }
+  if (pendingLocal.value) {
+    // SN/AC 逐模型检测也推实时进度(state 里 probeProgress),浮层与 OC 同款显示「N/M · 并行 N」
+    const name = pendingLocal.value
+    const prog = name === 'sn-probe' || name === 'sn-validate'
+      ? (s.sensenova as { probeProgress?: { done: number, total: number, concurrency: number } | null } | undefined)?.probeProgress
+      : name === 'ac-probe'
+        ? (s.atomcode as { probeProgress?: { done: number, total: number, concurrency: number } | null } | undefined)?.probeProgress
+        : null
+    if (prog && prog.total > 0) return { label: opLabel(name), detail: `${prog.done}/${prog.total} · 并行 ${prog.concurrency}` }
+    return { label: opLabel(name) }
+  }
   if (s.actionBusy) return { label: opLabel(String(s.actionBusy)) }
   if ((s.configSearch as { running?: boolean } | undefined)?.running) return { label: '查找配置文件' }
   return null

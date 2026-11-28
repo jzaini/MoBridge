@@ -530,6 +530,7 @@ onMounted(() => { gatewayInput.value = String(ac.value.gateway || '') })
       <section class="confirm-sec">
         <h4>已有登录凭据</h4>
         <p>本机已登录{{ ac.account?.username ? '（' + ac.account.username + '）' : '' }}，重新登录会弹出终端窗口并覆盖现有授权。只想刷新目录的话，请用「刷新目录」。</p>
+        <p>浏览器授权完成后<b>请保持终端窗口打开</b>——墨桥靠它把新凭据写进配置；中途关掉窗口，墨桥会一直等到超时。</p>
       </section>
     </ConfirmModal>
 

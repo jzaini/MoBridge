@@ -5,7 +5,7 @@
 //
 // 两步：填 Key 并验证 / 检测并挑选模型。
 // 验证被放进第 1 步且保存后自动跑：Key 存下去的那一刻就该知道它对不对，
-// 让用户再点一次「验证」、甚至跑到第 2 步才发现鉴权失败，是上一版最别扭的地方。
+// 让用户再点一次「验证」、甚至跑到第 2 步才发现 Key 无效，是上一版最别扭的地方。
 import { ref, computed, onMounted, watch } from 'vue'
 import { NButton, NInput, NModal } from 'naive-ui'
 import {
@@ -26,7 +26,7 @@ type SnModel = { id: string, upstream: string, name: string, kind: string, conte
 type SnResult = { model: string, ok: boolean, latencyMs: number | null, status: number | null, error: string | null, code: string | null, time: string }
 
 // 本页产生的通知统一标日日新来源：通知中心里跟 AtomCode 的消息一眼分开
-// （之前两边通知挤在同一列，"鉴权通过"容易被误读成 AtomCode 登录成功）。
+// （之前两边通知挤在同一列，"Key 有效"容易被误读成 AtomCode 登录成功）。
 function snNote(text: string, kind: '' | 'ok' | 'error' = '', opts: { stream?: string, detail?: string } = {}) {
   baseNote(text, kind, { ...opts, source: '日日新' })
 }
@@ -60,14 +60,14 @@ const inspection = computed(() => inspectionOf(state.value))
 const slice = computed(() => sourceSliceOf(inspection.value, 'sensenova'))
 const owned = computed(() => slice.value.count)
 
-// 「接入信息」卡：用的哪把 Key（打码）、走哪个接口（是不是被改过）、鉴权过没过。
+// 「接入信息」卡：用的哪把 Key（打码）、走哪个接口（是不是被改过）、验证过没过。
 const infoRows = computed<InfoRow[]>(() => {
   const cur = sn.value as Record<string, any>
   const keyMask = String(cur.keyMask || '')
   return [
     { label: 'API Key', value: keyPresent.value ? (keyMask || '已保存') : '未配置', mono: true, kind: keyPresent.value ? 'ok' : 'na', title: keyPresent.value ? '只显示首尾，完整 Key 只留在本机数据目录' : undefined },
     { label: '接口地址', value: String(cur.apiBase || '—'), mono: true, title: cur.apiBaseCustom ? '已改成自定义地址' : '使用官方默认地址' },
-    { label: '鉴权', value: validated.value ? '已通过' : '未验证', kind: validated.value ? 'ok' : 'na' },
+    { label: 'Key 验证', value: validated.value ? '有效' : '未验证', kind: validated.value ? 'ok' : 'na' },
     { label: '模型清单', value: models.value.length ? models.value.length + ' 个 · 当前可用 ' + availableCount.value : '尚未读取', kind: models.value.length ? undefined : 'na' },
   ]
 })
@@ -97,7 +97,7 @@ const rail = computed<RailStep[]>(() => [
     key: 'key',
     label: '填写并验证 Key',
     hint: keyPresent.value
-      ? (validated.value ? '鉴权通过' : (validation.value?.ok === false ? '鉴权未通过' : '已保存，等待验证'))
+      ? (validated.value ? 'Key 有效' : (validation.value?.ok === false ? 'Key 无效' : '已保存，等待验证'))
       : '未配置',
     state: validated.value ? 'done' : 'current',
   },
@@ -240,7 +240,7 @@ const baseInput = ref('')
 // 本次会话是否已经自动验证过：一次就够，反复失败时不该每切一次页签就打一轮上游。
 let autoValidated = false
 
-// 存完 Key 直接验证：这就是「有 key 之后为什么不能自动鉴权」的答案。
+// 存完 Key 直接验证：这就是「有 key 之后为什么不能自动验证」的答案。
 async function saveKey() {
   const value = keyInput.value.trim()
   if (!value) { snNote('请先填入 API Key。', 'error'); return }
@@ -250,7 +250,7 @@ async function saveKey() {
     const envelope = await callAction('sn-save-key', value)
     if (!envelope.ok) throw new Error(envelope.error || '保存失败')
     keyInput.value = ''
-    snNote('Key 已保存到本机（0600），正在自动鉴权…', 'ok', { stream: 'sn-save-key' })
+    snNote('Key 已保存到本机（0600），正在自动验证…', 'ok', { stream: 'sn-save-key' })
   } catch (error) {
     snFailure(error)
     return
@@ -285,7 +285,7 @@ async function validate() {
     if (!envelope.ok) throw new Error(envelope.error || '验证失败')
     const result = (envelope.result || {}) as { ok?: boolean, model?: string, latencyMs?: number, available?: number, error?: string }
     snNote(result.ok
-      ? `鉴权通过（${result.model}，${result.latencyMs ?? '—'} ms）；逐模型检测完成，${result.available ?? 0} 个可用。`
+      ? `Key 有效（${result.model}，${result.latencyMs ?? '—'} ms）；逐模型检测完成，${result.available ?? 0} 个可用。`
       : `验证失败：${result.error || '未知原因'}`, result.ok ? 'ok' : 'error')
   } catch (error) {
     snFailure(error)
@@ -372,7 +372,7 @@ function contextText(value: number | null) {
 }
 function openDoc(url?: string) { if (url) void window.bridge.openExternal(url) }
 
-// 打开页面时若已存了 Key 却从没验证成功过，自动补一次鉴权。
+// 打开页面时若已存了 Key 却从没验证成功过，自动补一次验证。
 // 否则用户每次进来都要自己找按钮点一下，而"有没有 Key"本来就是页面自己知道的。
 onMounted(() => {
   baseInput.value = String(sn.value.apiBase || '')
@@ -395,14 +395,13 @@ onMounted(() => {
     </div>
 
     <div class="plan-main">
-      <!-- 页头只在第 1 步显示：第 2 步的标题并入卡片、按钮并入表格工具行。 -->
+      <!-- 页头只在第 1 步显示：第 2 步的标题并入卡片、按钮并入表格工具行。
+           「重新验证并检测」已并入 Key 输入行的状态化按钮（见下）——同一个动作
+           不该有两个入口分居两角，用户分不清「保存并验证」和它的区别。 -->
       <header v-if="active === 'key'" class="stage-head">
         <div class="stage-title">
           <h2>填写并验证 API Key</h2>
           <p class="stage-sub">用你的 API Key 直连日日新</p>
-        </div>
-        <div class="stage-actions">
-          <NButton size="small" type="primary" :disabled="!keyPresent || busy" title="验证 Key，并把每个对话模型真跑一遍" @click="validate">重新验证并检测</NButton>
         </div>
       </header>
 
@@ -416,7 +415,13 @@ onMounted(() => {
           <div class="field-row">
             <NInput v-model:value="keyInput" :type="showKey ? 'text' : 'password'" size="small" clearable
               placeholder="粘贴 platform.sensenova.cn 创建的 API Key" :disabled="busy" @keyup.enter="saveKey" />
-            <NButton size="small" type="primary" :disabled="busy || !keyInput.trim()" title="保存后立刻验证 Key" @click="saveKey">保存并验证</NButton>
+            <!-- 一个按钮两种形态：输入框有内容=保存新 Key 并验证；空=用已保存的 Key 重新验证。
+                 原先「保存并验证」+ 右上角「重新验证并检测」是同一动作的两个入口，用户分不清。 -->
+            <NButton size="small" type="primary" :disabled="busy || (!keyInput.trim() && !keyPresent)"
+              :title="keyInput.trim() ? '保存新 Key 并验证有效性，随后逐个检测模型可用性' : '用已保存的 Key 重新验证，并逐个检测模型可用性'"
+              @click="keyInput.trim() ? saveKey() : validate()">
+              {{ keyInput.trim() ? '保存并验证' : '重新验证' }}
+            </NButton>
             <NButton size="small" :disabled="busy" @click="showKey = !showKey">{{ showKey ? '隐藏' : '显示' }}</NButton>
             <NButton size="small" :disabled="busy || !keyPresent" @click="clearKey">清除</NButton>
           </div>
@@ -424,18 +429,18 @@ onMounted(() => {
           <dl class="kv key-kv">
             <div><dt>当前 Key</dt><dd :class="keyPresent ? 'ok' : 'na'">{{ keyPresent ? sn.keyMask : '未配置' }}</dd></div>
             <div>
-              <dt>鉴权</dt>
+              <dt>Key 验证</dt>
               <dd :class="validated ? 'ok' : (validation?.ok === false ? 'error' : 'na')">
-                {{ validated ? '通过' : (validation?.ok === false ? '未通过' : '未验证') }}
+                {{ validated ? '有效' : (validation?.ok === false ? '无效' : '未验证') }}
               </dd>
             </div>
             <div><dt>接口地址</dt><dd class="mono">{{ sn.apiBase }}</dd></div>
           </dl>
 
           <!-- 验证结果就地展示：失败原因不藏到第 2 步。 -->
-          <p v-if="validation && validation.ok === false" class="inline-error">鉴权失败：{{ validation.error || '未知原因' }}</p>
+          <p v-if="validation && validation.ok === false" class="inline-error">Key 验证失败：{{ validation.error || '未知原因' }}</p>
           <p v-else-if="validated && availableCount" class="inline-ok">
-            鉴权通过，{{ availableCount }} / {{ chatModels.length }} 个模型可用，已进入下一步。
+            Key 有效，{{ availableCount }} / {{ chatModels.length }} 个模型可用，已进入下一步。
           </p>
 
           <div class="field-row">
@@ -456,7 +461,7 @@ onMounted(() => {
           <ol class="review-list guide">
             <li>点上方的「打开日日新控制台」，用你的账号登录。</li>
             <li>在控制台里新建一个 API Key，复制出来。</li>
-            <li>粘贴到本页输入框，点「保存并验证」——保存后自动鉴权，通过就进第 2 步挑模型。</li>
+            <li>粘贴到本页输入框，点「保存并验证」——保存后会自动验证 Key 并逐个检测模型，有效就进第 2 步挑模型。</li>
           </ol>
         </div>
       </section>

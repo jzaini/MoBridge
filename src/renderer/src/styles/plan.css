@@ -143,7 +143,7 @@
 .legend { margin: 10px 0 0; font-size: 11px; line-height: 1.6; color: var(--disabled-text); }
 .inline-error { margin: 10px 0 0; font-size: 12px; color: var(--error-text); background: var(--error-background); border-radius: 7px; padding: 7px 10px; }
 .inline-warn { margin: 10px 0 0; font-size: 12px; color: var(--warning-text); background: var(--warning-background); border-radius: 7px; padding: 7px 10px; }
-/* 鉴权通过这类"好事"也要有落点：只在表格里标绿，用户会怀疑自己看错。 */
+/* "Key 有效"这类好事也要有落点：只在表格里标绿，用户会怀疑自己看错。 */
 .inline-ok {
   margin: 10px 0 0; font-size: 12px; color: var(--success-text);
   background: color-mix(in srgb, var(--success-dot) 12%, transparent);

@@ -19,7 +19,7 @@
             <span class="bs-detail">{{ st.detail }}</span>
           </li>
         </ul>
-        <div v-if="!bootFailed" class="boot-track wide" :class="{ indeterminate: bootPercent >= 100 }" aria-hidden="true"><i class="boot-fill" :style="bootPercent >= 100 ? undefined : { width: bootPercent + '%' }" /></div>
+        <div v-if="!bootFailed" class="boot-track wide indeterminate" aria-hidden="true"><i class="boot-fill" /></div>
         <span v-if="!bootFailed" class="boot-time">{{ bootTimeHint }}</span>
         <span v-if="!bootFailed" class="boot-hint">全部就绪后自动进入主页面</span>
         <div v-else class="wc-actions">
@@ -291,28 +291,44 @@ const bootOverlay = computed(() => {
   const phase = state.value.phase
   return phase === 'starting' || phase === 'reading' || phase === 'error'
 })
+// 启动页真实步骤清单：由服务层推送的 state.bootStep 驱动（main readState 整包透传）——
+// 此前只有两步占位（用户实锤「启动具体做什么没展示」），现在服务层每个真实阶段都推。
+const BOOT_STAGES: Array<{ key: string, label: string, hint?: string, show?: (s: { autoProbeOnStart?: boolean }) => boolean }> = [
+  { key: 'service', label: '启动后台服务进程（隔离 Node，免装依赖）' },
+  { key: 'config', label: '加载本地配置与判定缓存' },
+  { key: 'atomcode', label: 'AtomCode 检测与目录加载' },
+  { key: 'runtime', label: '准备 OpenCode 运行时', hint: '未安装时用到才自动下载（约 76MB）' },
+  { key: 'bridge', label: '启动转发口（127.0.0.1:31280 / 31282）' },
+  { key: 'catalog', label: '读取免费模型目录' },
+  { key: 'probe', label: '检测模型可用性', show: s => s.autoProbeOnStart !== false },
+]
 const bootSteps = computed(() => {
-  const s = state.value
-  const statusText = (status: string) => (status === 'done' ? '完成' : status === 'active' ? '进行中' : '待开始')
+  const s = state.value as { phase: string, message?: string, bootStep?: string, settings?: { autoProbeOnStart?: boolean }, autoProbeOnStart?: boolean }
   const failed = s.phase === 'error'
-  const steps: Array<{ key: string, label: string, status: 'pending' | 'active' | 'done' | 'failed', detail: string }> = [
-    {
-      key: 'service', label: '启动后台服务与转发口（127.0.0.1:31280 / 31282）',
-      status: failed ? 'failed' : s.phase === 'starting' ? 'active' : 'done',
-      detail: failed ? (s.message || '启动失败') : '',
-    },
-    {
-      key: 'config', label: '加载墨桥本地配置与写入目标',
-      status: failed ? 'pending' : s.phase === 'starting' ? 'active' : 'done', detail: '',
-    },
-  ]
+  const stageKeys = BOOT_STAGES.filter(st => !st.show || st.show({ autoProbeOnStart: (s.settings as { autoProbeOnStart?: boolean } | undefined)?.autoProbeOnStart }))
+  const currentIdx = s.bootStep ? stageKeys.findIndex(st => st.key === s.bootStep) : -1
+  const statusText = (status: string) => (status === 'done' ? '完成' : status === 'active' ? '进行中' : '待开始')
+  const steps = stageKeys.map((st, idx) => ({
+    key: st.key,
+    label: st.label,
+    status: (failed && idx === Math.max(currentIdx, 0) ? 'failed'
+      : currentIdx === -1 ? (idx === 0 ? 'active' : 'pending')
+      : idx < currentIdx ? 'done'
+      : idx === currentIdx ? 'active'
+      : s.phase === 'ready' ? 'done' : 'pending') as 'pending' | 'active' | 'done' | 'failed',
+    detail: failed && idx === Math.max(currentIdx, 0) ? (s.message || '启动失败') : '',
+  }))
+  // 兼容旧 status.json（无 bootStep 字段）：保留原两步行为
+  if (currentIdx === -1 && !s.bootStep) {
+    const legacy: Array<{ key: string, label: string, status: 'pending' | 'active' | 'done' | 'failed', detail: string }> = [
+      { key: 'service', label: '启动后台服务与转发口（127.0.0.1:31280 / 31282）', status: failed ? 'failed' : s.phase === 'starting' ? 'active' : 'done', detail: failed ? (s.message || '启动失败') : '' },
+      { key: 'config', label: '加载墨桥本地配置与写入目标', status: failed ? 'pending' : s.phase === 'starting' ? 'active' : 'done', detail: '' },
+    ]
+    for (const st of legacy) if (st.status !== 'active') st.detail = st.detail || statusText(st.status === 'failed' ? 'active' : st.status)
+    return legacy
+  }
   for (const st of steps) if (st.status !== 'active') st.detail = st.detail || statusText(st.status === 'failed' ? 'active' : st.status)
   return steps
-})
-const bootPercent = computed(() => {
-  const steps = bootSteps.value
-  const done = steps.filter(st => st.status === 'done').length
-  return Math.round(done / steps.length * 100)
 })
 // ── 启动耗时与预计 ────────────────────────────────────────────────────────
 // 干等最糟心：已耗时实时走秒；预计耗时用「上次启动的真实总耗时」自动校准
@@ -529,8 +545,8 @@ async function doServiceStart() {
 .boot-track { width: 100%; height: 4px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .boot-track.wide { width: 100%; }
 .boot-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent-text); transition: width .5s ease; }
-/* 步骤全部完成但服务还没就绪的窗口期（探测/目录在跑）：进度条切成流动条纹的不确定态，
-   告诉用户"仍在工作"，而不是一条静止的满格让人以为卡死了。 */
+/* 启动页进度条统一为不定态流动条纹（与底部浮层 OpProgress 同款——U-18：用户要的是
+   「仍在工作」的动感，不是假精确的百分比；启动步骤只有粗粒度两步，百分比会跳变误导）。 */
 .boot-track.indeterminate .boot-fill {
   width: 100%;
   background: repeating-linear-gradient(45deg,

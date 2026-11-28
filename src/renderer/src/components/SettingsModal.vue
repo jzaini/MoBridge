@@ -168,6 +168,41 @@
               <NButton size="tiny" :disabled="cacheBusy || !serviceReady" :loading="cacheBusy" @click="clearCache">清空</NButton>
             </div>
           </div>
+          <div class="settings-row">
+            <div class="settings-label">
+              <span>全部配置写入</span>
+              <small>一键移除墨桥写入到所有客户端的模型条目(OpenCode/AtomCode/日日新 × WorkBuddy/DSH/墨坊/Qoder/Trae);你手写的配置不受影响。不可恢复,请确认后再执行。</small>
+            </div>
+            <div class="settings-control">
+              <NButton size="tiny" :disabled="removeAllBusy || !serviceReady" :loading="removeAllBusy"
+                :type="confirmRemoveAll ? 'error' : 'default'" @click="onRemoveAll">
+                {{ confirmRemoveAll ? '确认移除全部？' : '移除全部' }}
+              </NButton>
+            </div>
+          </div>
+        </section>
+
+        <!-- 更新日志:服务层启动时从 CHANGELOG.md 读入(state.changelog),应用内直接可看;
+             完整版跳转 GitHub Releases(白名单内)。标题与外链同一行(用户定案:按钮不单独占行)。 -->
+        <section v-show="activeSec === 'changelog'" class="settings-sec" data-sec="changelog">
+          <div class="cl-head">
+            <h4>更新日志</h4>
+            <NButton size="tiny" quaternary class="cl-link" @click="openReleases">GitHub 完整日志 ↗</NButton>
+          </div>
+          <div v-if="changelogLines.length" class="changelog-box">
+            <template v-for="(line, i) in changelogLines" :key="i">
+              <h4 v-if="line.startsWith('## ')" class="cl-version">{{ line.slice(3) }}</h4>
+              <h5 v-else-if="line.startsWith('### ')" class="cl-section">{{ line.slice(4) }}</h5>
+              <p v-else-if="line.trim()" class="cl-line" :class="{ 'cl-li': line.startsWith('- ') }">
+                <!-- md 加粗(**x**)没有渲染器,拆段后奇数段用 <strong> 真加粗——星号原样露出被用户实锤 -->
+                <template v-for="(seg, si) in boldSegments(line)" :key="si">
+                  <strong v-if="si % 2 === 1">{{ seg }}</strong>
+                  <template v-else>{{ seg }}</template>
+                </template>
+              </p>
+            </template>
+          </div>
+          <p v-else class="settings-note">更新日志尚未加载。</p>
         </section>
 
         <!-- 关于 -->
@@ -228,6 +263,7 @@ const SECTIONS = [
   { key: 'paths', label: '写入位置' },
   { key: 'app', label: '应用行为' },
   { key: 'maint', label: '维护' },
+  { key: 'changelog', label: '更新日志' },
   { key: 'about', label: '关于' },
 ] as const
 type SectionKey = typeof SECTIONS[number]['key']
@@ -244,6 +280,44 @@ watch(() => props.show, open => {
 })
 
 const { state } = useService()
+
+// ── 更新日志分区:逐行渲染 CHANGELOG.md(## → 版本标题、### → 小节、- → 列表) ──
+const changelogLines = computed(() => String(state.value.changelog || '').split('\n'))
+// 把一行按 ** 加粗标记拆段:偶数下标普通文字,奇数下标(被 ** 包住的)加粗。
+// 先剥掉列表前缀「- 」再拆,避免把前缀算进第一段。
+// 拆完段数是偶数 = ** 不成对(残缺的 md),整行按普通文字渲染,别把后半句误加粗。
+function boldSegments(line: string): string[] {
+  const body = line.startsWith('- ') ? line.slice(2) : line
+  const segments = body.split('**')
+  return segments.length % 2 === 1 ? segments : [body]
+}
+// ── 一键移除全部配置写入:两段确认(第一次点变「确认移除全部？」,5 秒内再点执行) ──
+const removeAllBusy = ref(false)
+const confirmRemoveAll = ref(false)
+let confirmTimer: number | null = null
+async function onRemoveAll(): Promise<void> {
+  if (removeAllBusy.value) return
+  if (!confirmRemoveAll.value) {
+    confirmRemoveAll.value = true
+    confirmTimer = window.setTimeout(() => { confirmRemoveAll.value = false }, 5000)
+    return
+  }
+  if (confirmTimer) { window.clearTimeout(confirmTimer); confirmTimer = null }
+  confirmRemoveAll.value = false
+  removeAllBusy.value = true
+  try {
+    await callAction('remove-all', undefined, 60000)
+    note('已移除墨桥写入的全部配置条目', 'ok')
+  } catch (e) {
+    notifyFailure(e)
+  } finally {
+    removeAllBusy.value = false
+  }
+}
+
+function openReleases(): void {
+  void window.bridge.openExternal('https://github.com/jzaini/MoBridge/releases')
+}
 
 // 服务里读不到（服务还没起 / 旧版 status.json）时的兜底：与服务层 SETTINGS_DEFAULTS 一致。
 const DEFAULTS: ServiceSettings = {
@@ -523,6 +597,22 @@ async function confirmPath() {
 }
 .settings-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--subtle-line); }
 .settings-note { font-size: 11.5px; color: var(--muted); }
+/* 更新日志分区:限高滚动(设置面板固定高度,分区内容不撑开——用户拍板);逐行渲染 md。
+   高度自适应:分区 flex 纵向铺满面板剩余高度,日志框吃剩余空间(内部滚动),不写死 380px。 */
+.settings-sec[data-sec='changelog'] { display: flex; flex-direction: column; height: 100%; padding-bottom: 6px; }
+.cl-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.cl-link { flex: 0 0 auto; }
+.changelog-box {
+  flex: 1 1 auto; min-height: 140px; overflow-y: auto; padding: 8px 10px;
+  border: 1px solid var(--subtle-line); border-radius: 8px; background: var(--surface);
+}
+.cl-version { margin: 10px 0 6px; font-size: 13px; font-weight: 700; color: var(--text); }
+.cl-version:first-child { margin-top: 0; }
+.cl-section { margin: 8px 0 4px; font-size: 11.5px; color: var(--accent-text); }
+.cl-line { margin: 3px 0; font-size: 11.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap; }
+.cl-li { padding-left: 14px; position: relative; }
+.cl-li::before { content: '·'; position: absolute; left: 4px; color: var(--muted); }
+
 .settings-tip { margin: 2px 0 4px; font-size: 11px; line-height: 1.6; color: var(--disabled-text); }
 
 /* ── 写入位置 ───────────────────────────────────────────────────────── */
